@@ -337,6 +337,48 @@ static __cold struct io_ring_ctx *io_ring_ctx_alloc(struct io_uring_params *p)
 	INIT_LIST_HEAD(&ctx->ltimeout_list);
 	INIT_LIST_HEAD(&ctx->rsrc_ref_list);
 	init_llist_head(&ctx->work_llist);
+	INIT_LIST_HEAD(&ctx->tctx_list);
+	ctx->submit_state.free_list.next = NULL;
+	INIT_HLIST_HEAD(&ctx->waitid_list);
+#ifdef CONFIG_FUTEXT
+	INIT_HLIST_HEAD(&ctx->futex_list);
+#endif
+	INIT_DELAYED_WORK(&ctx->fallback_work, io_fallback_req_func);
+	INIT_WQ_LIST(&ctx->submit_state.compl_reqs);
+	INIT_HLIST_HEAD(&ctx->cancelable_uring_cmd);
+	io_napi_init(ctx);
+
+	return ctx;
+err:
+	io_alloc_cache_free(&ctx->rsrc_node_cache, kfree);
+	io_alloc_cache_free(&ctx->apoll_cache, kfree);
+	io_alloc_cache_free(&ctx->netmsg_cache, io_netmsg_cache_free);
+	io_alloc_cache_free(&ctx->rw_cache, io_rw_cache_free);
+	io_alloc_cache_free(&ctx->uring_cache, kfree);
+	io_futex_cache_free(ctx);
+	kfree(ctx->cancel_table.hbs);
+	kfree(ctx->cancel_table_locked.hbs);
+	xa_destroy(&ctx->io_bl_xa);
+	kfree(ctx);
+	return NULL;
+}
+
+static void io_account_cq_overflow(struct io_ring_ctx *ctx) 
+{
+	struct io_rings *r = ctx->rings;
+
+	WRITE_ONCE(r->cq_overflow, READ_ONCE(r->cq_overflow) + 1);
+	ctx->cq_extra--;
+}
+
+static bool req_need_defer(struct io_kiocb *req, u32 seq)
+{
+	if (unlikely(req->flags & REQ_F_IO_DRAIN)) {
+		struct io_ring_ctx *ctx = req->ctx;
+
+		return seq + READ_ONCE(ctx->cq_extra) != ctx->cached_cq_tail;
+	}
+
 	return false;
 }
 
@@ -3332,10 +3374,15 @@ static __cold int io_allocate_scq_urings(struct io_ring_ctx *ctx,
 	if (size == SIZE_MAX)
 		return -EOVERFLOW;
 
-	if (!(ctx->flags & IORING_SETUP_NO_MMAP))
+	if (!(ctx->flags & IORING_SETUP_NO_MMAP)) {
 		rings = io_pages_map(&ctx->ring_pages, &ctx->n_ring_pages, size);
-	else
+		PRINTK("io_uring.c: io_allocate_scq_urings(): io_pages_map, rings: %p\n");
+	}
+	else {
+		PRINTK("io_uring.c: io_allocate_scq_urings(): io_rings_map\n");
 		rings = io_rings_map(ctx, p->cq_off.user_addr, size);
+	}
+
 
 	if (IS_ERR(rings))
 		return PTR_ERR(rings);
@@ -3357,15 +3404,20 @@ static __cold int io_allocate_scq_urings(struct io_ring_ctx *ctx,
 		return -EOVERFLOW;
 	}
 
-	if (!(ctx->flags & IORING_SETUP_NO_MMAP))
+	if (!(ctx->flags & IORING_SETUP_NO_MMAP)) {
 		ptr = io_pages_map(&ctx->sqe_pages, &ctx->n_sqe_pages, size);
-	else
+		PRINTK("io_uring.c: io_allocate_scq_urings(): io_pages_map(), ptr:%p, ctx->sqe_pages:%d, ctx->n_sqe_pages:%d, size:%d\n", ptr, ctx->sqe_pages, ctx->n_sqe_pages, size);
+	}
+	else {
 		ptr = io_sqes_map(ctx, p->sq_off.user_addr, size);
+		PRINTK("io_uring.c: io_allocate_scq_urings(): p->sq_off.user_addr:%p\n", p->sq_off.user_addr);
+	}
 
 	if (IS_ERR(ptr)) {
 		io_rings_free(ctx);
 		return PTR_ERR(ptr);
 	}
+	
 	PRINTK("io_uring.c: io_allocate_scq_urings():%p\n", ptr);
 	ctx->sq_sqes = ptr;
 	return 0;
@@ -3540,6 +3592,12 @@ static __cold int io_uring_create(unsigned entries, struct io_uring_params *p,
 	p->sq_off.resv1 = 0;
 	if (!(ctx->flags & IORING_SETUP_NO_MMAP))
 		p->sq_off.user_addr = 0;
+
+	PRINTK("=====ring params=====\n");
+	PRINTK("io_uring.c: io_uring_create(): p->sq_off.head:%u\n", p->sq_off.head);
+	PRINTK("io_uring.c: io_uring_create(): p->sq_off.ring_mask:%u\n", p->sq_off.ring_mask);
+	PRINTK("io_uring.c: io_uring_create(): p->sq_off.ring_entries:%u\n", p->sq_off.ring_entries);
+	PRINTK("=====================\n");
 
 	p->cq_off.head = offsetof(struct io_rings, cq.head);
 	p->cq_off.tail = offsetof(struct io_rings, cq.tail);
