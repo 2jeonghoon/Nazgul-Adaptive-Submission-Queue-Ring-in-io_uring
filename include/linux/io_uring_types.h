@@ -105,6 +105,11 @@ struct io_uring {
 	u32 tail;
 };
 
+struct io_uring_list {
+	struct io_uring		uring;
+	struct list_head	list;
+};
+
 /*
  * This data is shared with the application through the mmap at offsets
  * IORING_OFF_SQ_RING and IORING_OFF_CQ_RING.
@@ -113,73 +118,14 @@ struct io_uring {
  * io_sqring_offsets when calling io_uring_setup.
  */
 struct io_rings {
-	/*
-	 * Head and tail offsets into the ring; the offsets need to be
-	 * masked to get valid indices.
-	 *
-	 * The kernel controls head of the sq ring and the tail of the cq ring,
-	 * and the application controls tail of the sq ring and the head of the
-	 * cq ring.
-	 */
-	struct io_uring		sq, cq;
-	/*
-	 * Bitmasks to apply to head and tail offsets (constant, equals
-	 * ring_entries - 1)
-	 */
+	struct io_uring_list	sq_list;
+	struct io_uring		cq;
 	u32			sq_ring_mask, cq_ring_mask;
-	/* Ring sizes (constant, power of 2) */
 	u32			sq_ring_entries, cq_ring_entries;
-	/*
-	 * Number of invalid entries dropped by the kernel due to
-	 * invalid index stored in array
-	 *
-	 * Written by the kernel, shouldn't be modified by the
-	 * application (i.e. get number of "new events" by comparing to
-	 * cached value).
-	 *
-	 * After a new SQ head value was read by the application this
-	 * counter includes all submissions that were dropped reaching
-	 * the new SQ head (and possibly more).
-	 */
 	u32			sq_dropped;
-	/*
-	 * Runtime SQ flags
-	 *
-	 * Written by the kernel, shouldn't be modified by the
-	 * application.
-	 *
-	 * The application needs a full memory barrier before checking
-	 * for IORING_SQ_NEED_WAKEUP after updating the sq tail.
-	 */
 	atomic_t		sq_flags;
-	/*
-	 * Runtime CQ flags
-	 *
-	 * Written by the application, shouldn't be modified by the
-	 * kernel.
-	 */
 	u32			cq_flags;
-	/*
-	 * Number of completion events lost because the queue was full;
-	 * this should be avoided by the application by making sure
-	 * there are not more requests pending than there is space in
-	 * the completion queue.
-	 *
-	 * Written by the kernel, shouldn't be modified by the
-	 * application (i.e. get number of "new events" by comparing to
-	 * cached value).
-	 *
-	 * As completion events come in out of order this counter is not
-	 * ordered with any other data.
-	 */
 	u32			cq_overflow;
-	/*
-	 * Ring buffer of completion events.
-	 *
-	 * The kernel writes completion events fresh every time they are
-	 * produced, so the application is allowed to modify pending
-	 * entries.
-	 */
 	struct io_uring_cqe	cqes[] ____cacheline_aligned_in_smp;
 };
 
@@ -226,7 +172,6 @@ struct io_alloc_cache {
 };
 
 struct io_ring_ctx {
-	/* const or read-mostly hot data */
 	struct {
 		unsigned int		flags;
 		unsigned int		drain_next: 1;
@@ -234,7 +179,6 @@ struct io_ring_ctx {
 		unsigned int		off_timeout_used: 1;
 		unsigned int		drain_active: 1;
 		unsigned int		has_evfd: 1;
-		/* all CQEs should be posted only by the submitter task */
 		unsigned int		task_complete: 1;
 		unsigned int		lockless_cq: 1;
 		unsigned int		syscall_iopoll: 1;
@@ -242,91 +186,43 @@ struct io_ring_ctx {
 		unsigned int		drain_disabled: 1;
 		unsigned int		compat: 1;
 		unsigned int		iowq_limits_set : 1;
-
 		struct task_struct	*submitter_task;
 		struct io_rings		*rings;
 		struct percpu_ref	refs;
-
 		enum task_work_notify_mode	notify_method;
 		unsigned			sq_thread_idle;
 	} ____cacheline_aligned_in_smp;
-
-	/* submission data */
 	struct {
 		struct mutex		uring_lock;
-
-		/*
-		 * Ring buffer of indices into array of io_uring_sqe, which is
-		 * mmapped by the application using the IORING_OFF_SQES offset.
-		 *
-		 * This indirection could e.g. be used to assign fixed
-		 * io_uring_sqe entries to operations and only submit them to
-		 * the queue when needed.
-		 *
-		 * The kernel modifies neither the indices array nor the entries
-		 * array.
-		 */
 		u32			*sq_array;
 		struct io_uring_sqe	*sq_sqes;
 		unsigned		cached_sq_head;
 		unsigned		sq_entries;
-
-		/*
-		 * Fixed resources fast path, should be accessed only under
-		 * uring_lock, and updated through io_uring_register(2)
-		 */
 		struct io_rsrc_node	*rsrc_node;
 		atomic_t		cancel_seq;
-
-		/*
-		 * ->iopoll_list is protected by the ctx->uring_lock for
-		 * io_uring instances that don't use IORING_SETUP_SQPOLL.
-		 * For SQPOLL, only the single threaded io_sq_thread() will
-		 * manipulate the list, hence no extra locking is needed there.
-		 */
 		bool			poll_multi_queue;
 		struct io_wq_work_list	iopoll_list;
-
 		struct io_file_table	file_table;
 		struct io_mapped_ubuf	**user_bufs;
 		unsigned		nr_user_files;
 		unsigned		nr_user_bufs;
-
 		struct io_submit_state	submit_state;
-
 		struct xarray		io_bl_xa;
-
 		struct io_hash_table	cancel_table_locked;
 		struct io_alloc_cache	apoll_cache;
 		struct io_alloc_cache	netmsg_cache;
 		struct io_alloc_cache	rw_cache;
 		struct io_alloc_cache	uring_cache;
-
-		/*
-		 * Any cancelable uring_cmd is added to this list in
-		 * ->uring_cmd() by io_uring_cmd_insert_cancelable()
-		 */
 		struct hlist_head	cancelable_uring_cmd;
 	} ____cacheline_aligned_in_smp;
-
 	struct {
-		/*
-		 * We cache a range of free CQEs we can use, once exhausted it
-		 * should go through a slower range setup, see __io_get_cqe()
-		 */
 		struct io_uring_cqe	*cqe_cached;
 		struct io_uring_cqe	*cqe_sentinel;
-
 		unsigned		cached_cq_tail;
 		unsigned		cq_entries;
 		struct io_ev_fd	__rcu	*io_ev_fd;
 		unsigned		cq_extra;
 	} ____cacheline_aligned_in_smp;
-
-	/*
-	 * task_work and async notification delivery cacheline. Expected to
-	 * regularly bounce b/w CPUs.
-	 */
 	struct {
 		struct llist_head	work_llist;
 		unsigned long		check_cq;
@@ -334,96 +230,59 @@ struct io_ring_ctx {
 		atomic_t		cq_timeouts;
 		struct wait_queue_head	cq_wait;
 	} ____cacheline_aligned_in_smp;
-
-	/* timeouts */
 	struct {
 		spinlock_t		timeout_lock;
 		struct list_head	timeout_list;
 		struct list_head	ltimeout_list;
 		unsigned		cq_last_tm_flush;
 	} ____cacheline_aligned_in_smp;
-
 	spinlock_t		completion_lock;
-
 	struct list_head	io_buffers_comp;
 	struct list_head	cq_overflow_list;
 	struct io_hash_table	cancel_table;
-
 	struct hlist_head	waitid_list;
-
 #ifdef CONFIG_FUTEX
 	struct hlist_head	futex_list;
 	struct io_alloc_cache	futex_cache;
 #endif
-
 	const struct cred	*sq_creds;	/* cred used for __io_sq_thread() */
 	struct io_sq_data	*sq_data;	/* if using sq thread polling */
-
 	struct wait_queue_head	sqo_sq_wait;
 	struct list_head	sqd_list;
-
 	unsigned int		file_alloc_start;
 	unsigned int		file_alloc_end;
-
 	struct list_head	io_buffers_cache;
-
-	/* Keep this last, we don't need it for the fast path */
 	struct wait_queue_head		poll_wq;
 	struct io_restriction		restrictions;
-
-	/* slow path rsrc auxilary data, used by update/register */
 	struct io_mapped_ubuf		*dummy_ubuf;
 	struct io_rsrc_data		*file_data;
 	struct io_rsrc_data		*buf_data;
-
-	/* protected by ->uring_lock */
 	struct list_head		rsrc_ref_list;
 	struct io_alloc_cache		rsrc_node_cache;
 	struct wait_queue_head		rsrc_quiesce_wq;
 	unsigned			rsrc_quiesce;
-
 	u32			pers_next;
 	struct xarray		personalities;
-
-	/* hashed buffered write serialization */
 	struct io_wq_hash		*hash_map;
-
-	/* Only used for accounting purposes */
 	struct user_struct		*user;
 	struct mm_struct		*mm_account;
-
-	/* ctx exit and cancelation */
 	struct llist_head		fallback_llist;
 	struct delayed_work		fallback_work;
 	struct work_struct		exit_work;
 	struct list_head		tctx_list;
 	struct completion		ref_comp;
-
-	/* io-wq management, e.g. thread count */
 	u32				iowq_limits[2];
-
 	struct callback_head		poll_wq_task_work;
 	struct list_head		defer_list;
-
 #ifdef CONFIG_NET_RX_BUSY_POLL
 	struct list_head	napi_list;	/* track busy poll napi_id */
 	spinlock_t		napi_lock;	/* napi_list lock */
-
-	/* napi busy poll default timeout */
 	ktime_t			napi_busy_poll_dt;
 	bool			napi_prefer_busy_poll;
 	bool			napi_enabled;
-
 	DECLARE_HASHTABLE(napi_ht, 4);
 #endif
-
-	/* protected by ->completion_lock */
 	unsigned			evfd_last_cq_tail;
-
-	/*
-	 * If IORING_SETUP_NO_MMAP is used, then the below holds
-	 * the gup'ed pages for the two rings, and the sqes.
-	 */
 	unsigned short			n_ring_pages;
 	unsigned short			n_sqe_pages;
 	struct page			**ring_pages;

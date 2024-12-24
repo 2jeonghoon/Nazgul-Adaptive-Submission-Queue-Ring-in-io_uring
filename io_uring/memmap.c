@@ -67,14 +67,18 @@ void *io_pages_map(struct page ***out_pages, unsigned short *npages,
 	void *ret;
 
 	nr_pages = (size + PAGE_SIZE - 1) >> PAGE_SHIFT;
+	
+	PRINTK("nr_pages: %d\n", nr_pages);
+
 	pages = kvmalloc_array(nr_pages, sizeof(struct page *), gfp);
 	if (!pages)
 		return ERR_PTR(-ENOMEM);
 
+	PRINTK("io_mem_alloc_comound(%p, %d, %zu, 0x%x)\n", pages, nr_pages, size, gfp);
 	ret = io_mem_alloc_compound(pages, nr_pages, size, gfp);
 	if (!IS_ERR(ret))
 		goto done;
-
+	PRINTK("io_mem_alloc_single(%p, %d, %zu, 0x%x)\n", pages, nr_pages, size, gfp);
 	ret = io_mem_alloc_single(pages, nr_pages, size, gfp);
 	if (!IS_ERR(ret)) {
 done:

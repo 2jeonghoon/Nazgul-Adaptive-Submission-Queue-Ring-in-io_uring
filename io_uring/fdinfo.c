@@ -57,8 +57,8 @@ __cold void io_uring_show_fdinfo(struct seq_file *m, struct file *file)
 	struct io_rings *r = ctx->rings;
 	struct rusage sq_usage;
 	unsigned int sq_mask = ctx->sq_entries - 1, cq_mask = ctx->cq_entries - 1;
-	unsigned int sq_head = READ_ONCE(r->sq.head);
-	unsigned int sq_tail = READ_ONCE(r->sq.tail);
+	unsigned int sq_head = READ_ONCE(r->sq_list.uring.head);
+	unsigned int sq_tail = READ_ONCE(r->sq_list.uring.tail);
 	unsigned int cq_head = READ_ONCE(r->cq.head);
 	unsigned int cq_tail = READ_ONCE(r->cq.tail);
 	unsigned int cq_shift = 0;

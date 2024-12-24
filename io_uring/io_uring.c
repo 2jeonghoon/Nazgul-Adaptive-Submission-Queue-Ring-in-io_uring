@@ -277,7 +277,7 @@ static int io_alloc_hash_table(struct io_hash_table *table, unsigned bits)
 
 static __cold struct io_ring_ctx *io_ring_ctx_alloc(struct io_uring_params *p)
 {
-	PRINTK("io_ring_ctx_alloc: \n");
+	PRINTK("io_uring.c: io_ring_ctx_alloc()\n");
 	struct io_ring_ctx *ctx;
 	int hash_bits;
 	bool ret;
@@ -1976,7 +1976,7 @@ static void io_queue_async(struct io_kiocb *req, int ret)
 static inline void io_queue_sqe(struct io_kiocb *req)
 	__must_hold(&req->ctx->uring_lock)
 {
-	PRINTK("io_uring.c: io_queue_sqe\n");
+	// PRINTK("io_uring.c: io_queue_sqe\n");
 	int ret;
 
 	ret = io_issue_sqe(req, IO_URING_F_NONBLOCK|IO_URING_F_COMPLETE_DEFER);
@@ -2276,7 +2276,37 @@ static void io_commit_sqring(struct io_ring_ctx *ctx)
 	 * since once we write the new head, the application could
 	 * write new data to them.
 	 */
-	smp_store_release(&rings->sq.head, ctx->cached_sq_head);
+	smp_store_release(&rings->sq_list.uring.head, ctx->cached_sq_head);
+}
+
+static bool io_expand_sqring(struct io_ring_ctx *ctx) 
+{
+	unsigned int size = ctx->sq_entries;
+	size_t ring_sz = size * sizeof(struct io_uring_sqe);
+
+	void *new_sq_ring;
+
+	// Reallocate submission queue ring
+
+	new_sq_ring = vzalloc(ring_sz);
+
+	if (!new_sq_ring) {
+		pr_err("Failed to allocate memory for expanded SQ ring.\n");
+	        return false;
+	}
+
+	list_add_tail(new_sq_ring, &ctx->rings->sq_list.list);
+
+	// Copy existing SQEs to the new ring 
+/*	if (ctx->sq_ring_ptr) {
+		memcpy(new_sq_ring, ctx->sq_ring_ptr, size * sizeof(struct io_uring_sqe));
+		vfree(ctx->sq_ring_ptr); // Free old ring
+	} */
+
+
+	pr_info("Submission queue ring successfully expanded to %u entries.\n", size);
+
+	return true;
 }
 
 /*
@@ -2289,7 +2319,7 @@ static void io_commit_sqring(struct io_ring_ctx *ctx)
  */
 static bool io_get_sqe(struct io_ring_ctx *ctx, const struct io_uring_sqe **sqe)
 {
-	PRINTK("io_get_sqe: use head\n");
+	// PRINTK("io_get_sqe: use head\n");
 	unsigned mask = ctx->sq_entries - 1;
 	unsigned head = ctx->cached_sq_head++ & mask;
 
@@ -2323,7 +2353,7 @@ static bool io_get_sqe(struct io_ring_ctx *ctx, const struct io_uring_sqe **sqe)
 		head <<= 1;
 	}
 
-	PRINTK("ctx->sq_sqes:%p\n", ctx->sq_sqes);
+	// PRINTK("ctx->sq_sqes:%p\n", ctx->sq_sqes);
 	*sqe = &ctx->sq_sqes[head];
 	return true;
 }
@@ -2331,29 +2361,38 @@ static bool io_get_sqe(struct io_ring_ctx *ctx, const struct io_uring_sqe **sqe)
 int io_submit_sqes(struct io_ring_ctx *ctx, unsigned int nr)
 	__must_hold(&ctx->uring_lock)
 {
-	PRINTK("!!io_submit_sqes: !!\n");
 	unsigned int entries = io_sqring_entries(ctx);
 	unsigned int left;
 	int ret;
-
-	if (unlikely(!entries))
+	
+	// PRINTK("io_uring.c: io_submit_sqes: entries = %d\n", entries);
+	
+	if (unlikely(!entries)) {
+		PRINTK("io_uring.c: io_submit_sqes: unlikely(!entries), entries = %d\n", entries);
 		return 0;
+	}
+	
 	/* make sure SQ entry isn't read before tail */
 	ret = left = min(nr, entries);
+
 	io_get_task_refs(left);
 	io_submit_state_start(&ctx->submit_state, left);
-
+	
 	do {
 		const struct io_uring_sqe *sqe;
 		struct io_kiocb *req;
-
-		if (unlikely(!io_alloc_req(ctx, &req)))
+		
+		if (unlikely(!io_alloc_req(ctx, &req))) { 
+			PRINTK("fail to alloc req\n");
 			break;
+		}
+		
 		if (unlikely(!io_get_sqe(ctx, &sqe))) {
+			PRINTK("fail io_get_sqe func\n");
 			io_req_add_to_cache(req, ctx);
 			break;
 		}
-
+		
 		/*
 		 * Continue submitting even for sqe failure if the
 		 * ring was setup with IORING_SETUP_SUBMIT_ALL
@@ -2364,7 +2403,7 @@ int io_submit_sqes(struct io_ring_ctx *ctx, unsigned int nr)
 			break;
 		}
 	} while (--left);
-
+	
 	if (unlikely(left)) {
 		ret -= left;
 		/* try again if it submitted nothing and can't allocate a req */
@@ -2372,10 +2411,12 @@ int io_submit_sqes(struct io_ring_ctx *ctx, unsigned int nr)
 			ret = -EAGAIN;
 		current->io_uring->cached_refs += left;
 	}
-
+	
 	io_submit_state_end(ctx);
-	 /* Commit SQ ring head once we've consumed and submitted all SQEs */
+	
+	/* Commit SQ ring head once we've consumed and submitted all SQEs */
 	io_commit_sqring(ctx);
+	
 	return ret;
 }
 
@@ -2611,6 +2652,9 @@ static unsigned long rings_size(struct io_ring_ctx *ctx, unsigned int sq_entries
 	size_t off, sq_array_size;
 
 	off = struct_size(rings, cqes, cq_entries);
+
+	PRINTK("io_uring.c:rings_size():off=%zu\n", off);
+
 	if (off == SIZE_MAX)
 		return SIZE_MAX;
 	if (ctx->flags & IORING_SETUP_CQE32) {
@@ -2619,7 +2663,9 @@ static unsigned long rings_size(struct io_ring_ctx *ctx, unsigned int sq_entries
 	}
 
 #ifdef CONFIG_SMP
+	PRINTK("io_uring.c: rings_size(): CONFIG_SMP\n");
 	off = ALIGN(off, SMP_CACHE_BYTES);
+	PRINTK("io_uring.c:rings_size():off=%zu\n", off);
 	if (off == 0)
 		return SIZE_MAX;
 #endif
@@ -2637,6 +2683,8 @@ static unsigned long rings_size(struct io_ring_ctx *ctx, unsigned int sq_entries
 
 	if (check_add_overflow(off, sq_array_size, &off))
 		return SIZE_MAX;
+
+	PRINTK("io_uring.c:rings_size():off=%zu\n", off);
 
 	return off;
 }
@@ -3375,18 +3423,29 @@ static __cold int io_allocate_scq_urings(struct io_ring_ctx *ctx,
 		return -EOVERFLOW;
 
 	if (!(ctx->flags & IORING_SETUP_NO_MMAP)) {
+		/*
+		 * I think this phrase refers to cq_ring
+		 * io_pages_map set the ctx->ring_pages, and ctx->n_ring_pages).
+		 * Where are they used afterward?
+		 * */
+		PRINTK("io_uring.c: io_allocate_scq_urings(): !IORING_SETUP_NO_MMAP, so call io_pages_map(&ctx->ring_pages, &ctx->n_ring_pages), ctx->ring_pages:%p, ctx->n_ring_pages:%d, size:%d\n", ctx->ring_pages, ctx->n_ring_pages, size);
 		rings = io_pages_map(&ctx->ring_pages, &ctx->n_ring_pages, size);
-		PRINTK("io_uring.c: io_allocate_scq_urings(): io_pages_map, rings: %p\n");
+
+		PRINTK("io_uring.c: io_allocate_scq_urings(): io_pages_map()(ring), rings:%p, ctx->ring_pages:%p, ctx->n_ring_pages:%d, size:%d\n", rings, ctx->ring_pages, ctx->n_ring_pages, size);
 	}
 	else {
-		PRINTK("io_uring.c: io_allocate_scq_urings(): io_rings_map\n");
+		PRINTK("io_uring.c: io_allocate_scq_urings(): IORING_SETUP_NO_MMAP, so call io_rings_map(ctx, p->cq_off.user_addr, size)\n");
 		rings = io_rings_map(ctx, p->cq_off.user_addr, size);
+		PRINTK("io_uring.c: io_allocate_scq_urings(): IORING_SETUP_NO_MMAP, io_rings_map\n", ctx->ring_pages);
 	}
 
 
 	if (IS_ERR(rings))
 		return PTR_ERR(rings);
 
+	/*
+	 * ctx->rings refers to cq_ring?
+	 * */
 	ctx->rings = rings;
 	if (!(ctx->flags & IORING_SETUP_NO_SQARRAY))
 		ctx->sq_array = (u32 *)((char *)rings + sq_array_offset);
@@ -3405,12 +3464,17 @@ static __cold int io_allocate_scq_urings(struct io_ring_ctx *ctx,
 	}
 
 	if (!(ctx->flags & IORING_SETUP_NO_MMAP)) {
+		/*
+		 * I think this phrase refers to sq_ring.
+		 */
+		PRINTK("!IORING_SETUP_NO_MMAP, so call io_pages_map(&ctx->sqe_pages, &ctx->n_sqe_pages, size)\n");
 		ptr = io_pages_map(&ctx->sqe_pages, &ctx->n_sqe_pages, size);
-		PRINTK("io_uring.c: io_allocate_scq_urings(): io_pages_map(), ptr:%p, ctx->sqe_pages:%d, ctx->n_sqe_pages:%d, size:%d\n", ptr, ctx->sqe_pages, ctx->n_sqe_pages, size);
+		PRINTK("io_uring.c: io_allocate_scq_urings(): io_pages_map()(sqe), ptr:%p, ctx->sqe_pages:%p, ctx->n_sqe_pages:%d, size:%d\n", ptr, ctx->sqe_pages, ctx->n_sqe_pages, size);
 	}
 	else {
+		PRINTK("IORING_SETUP_NO_MMAP Double, so call io_sqes_map(ctx, p->sq_off.user_addr, size)\n");
 		ptr = io_sqes_map(ctx, p->sq_off.user_addr, size);
-		PRINTK("io_uring.c: io_allocate_scq_urings(): p->sq_off.user_addr:%p\n", p->sq_off.user_addr);
+		PRINTK("io_uring.c: io_allocate_scq_urings(): io_sqes_map(), p->sq_off.user_addr:%p\n", p->sq_off.user_addr);
 	}
 
 	if (IS_ERR(ptr)) {
@@ -3418,7 +3482,7 @@ static __cold int io_allocate_scq_urings(struct io_ring_ctx *ctx,
 		return PTR_ERR(ptr);
 	}
 	
-	PRINTK("io_uring.c: io_allocate_scq_urings():%p\n", ptr);
+	PRINTK("io_uring.c: io_allocate_scq_urings(): sq_sqes:%p. This pointer is created by io_pages_map\n", ptr);
 	ctx->sq_sqes = ptr;
 	return 0;
 }
@@ -3449,7 +3513,7 @@ static struct file *io_uring_get_file(struct io_ring_ctx *ctx)
 static __cold int io_uring_create(unsigned entries, struct io_uring_params *p,
 				  struct io_uring_params __user *params)
 {
-	PRINTK("io_uring.c: io_uring_create\n");
+	PRINTK("io_uring.c: io_uring_create()\n");
 	struct io_ring_ctx *ctx;
 	struct io_uring_task *tctx;
 	struct file *file;
@@ -3581,8 +3645,8 @@ static __cold int io_uring_create(unsigned entries, struct io_uring_params *p,
 	if (ret)
 		goto err;
 
-	p->sq_off.head = offsetof(struct io_rings, sq.head);
-	p->sq_off.tail = offsetof(struct io_rings, sq.tail);
+	p->sq_off.head = offsetof(struct io_rings, sq_list.uring.head);
+	p->sq_off.tail = offsetof(struct io_rings, sq_list.uring.tail);
 	p->sq_off.ring_mask = offsetof(struct io_rings, sq_ring_mask);
 	p->sq_off.ring_entries = offsetof(struct io_rings, sq_ring_entries);
 	p->sq_off.flags = offsetof(struct io_rings, sq_flags);
