@@ -200,6 +200,8 @@ enum io_uring_sqe_flags_bit {
  */
 #define IORING_SETUP_NO_SQARRAY		(1U << 16)
 
+#define IORING_SETUP_SQ_ADAPTIVE	(1U << 17)
+
 enum io_uring_op {
 	IORING_OP_NOP,
 	IORING_OP_READV,
@@ -512,6 +514,7 @@ struct io_cqring_offsets {
 struct io_uring_params {
 	__u32 sq_entries;
 	__u32 cq_entries;
+//	__u32 sq_list_entries;
 	__u32 flags;
 	__u32 sq_thread_cpu;
 	__u32 sq_thread_idle;

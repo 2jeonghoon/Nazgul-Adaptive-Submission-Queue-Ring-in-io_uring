@@ -156,7 +156,7 @@ static inline bool io_get_cqe_overflow(struct io_ring_ctx *ctx,
 					struct io_uring_cqe **ret,
 					bool overflow)
 {
-	PRINTK("io_get_cqe_overflow: ");
+//	PRINTK("io_get_cqe_overflow: ");
 	io_lockdep_assert_cq_locked(ctx);
 
 	if (unlikely(ctx->cqe_cached >= ctx->cqe_sentinel)) {
@@ -284,7 +284,7 @@ static inline bool io_sqring_full(struct io_ring_ctx *ctx)
 {
 	struct io_rings *r = ctx->rings;
 
-	return READ_ONCE(r->sq_list.uring.tail) - ctx->cached_sq_head == ctx->sq_entries;
+	return READ_ONCE(r->sq.tail) - ctx->cached_sq_head == ctx->sq_entries;
 }
 
 static inline unsigned int io_sqring_entries(struct io_ring_ctx *ctx)
@@ -293,7 +293,7 @@ static inline unsigned int io_sqring_entries(struct io_ring_ctx *ctx)
 	unsigned int entries;
 
 	/* make sure SQ entry isn't read before tail */
-	entries = smp_load_acquire(&rings->sq_list.uring.tail) - ctx->cached_sq_head;
+	entries = smp_load_acquire(&rings->sq.tail) - ctx->cached_sq_head;
 	return min(entries, ctx->sq_entries);
 }
 

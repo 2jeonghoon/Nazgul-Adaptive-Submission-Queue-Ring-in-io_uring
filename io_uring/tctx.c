@@ -211,6 +211,7 @@ void io_uring_unreg_ringfd(void)
 int io_ring_add_registered_file(struct io_uring_task *tctx, struct file *file,
 				     int start, int end)
 {
+	PRINTK("io_ring_add_registered_file()\n");
 	int offset;
 	for (offset = start; offset < end; offset++) {
 		offset = array_index_nospec(offset, IO_RINGFD_REG_MAX);

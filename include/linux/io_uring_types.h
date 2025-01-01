@@ -105,11 +105,6 @@ struct io_uring {
 	u32 tail;
 };
 
-struct io_uring_list {
-	struct io_uring		uring;
-	struct list_head	list;
-};
-
 /*
  * This data is shared with the application through the mmap at offsets
  * IORING_OFF_SQ_RING and IORING_OFF_CQ_RING.
@@ -118,7 +113,7 @@ struct io_uring_list {
  * io_sqring_offsets when calling io_uring_setup.
  */
 struct io_rings {
-	struct io_uring_list	sq_list;
+	struct io_uring		sq;
 	struct io_uring		cq;
 	u32			sq_ring_mask, cq_ring_mask;
 	u32			sq_ring_entries, cq_ring_entries;
@@ -198,6 +193,8 @@ struct io_ring_ctx {
 		struct io_uring_sqe	*sq_sqes;
 		unsigned		cached_sq_head;
 		unsigned		sq_entries;
+		struct io_uring_sqe	**sq_sqes_list;
+		unsigned		sq_list_entries;
 		struct io_rsrc_node	*rsrc_node;
 		atomic_t		cancel_seq;
 		bool			poll_multi_queue;
@@ -285,8 +282,10 @@ struct io_ring_ctx {
 	unsigned			evfd_last_cq_tail;
 	unsigned short			n_ring_pages;
 	unsigned short			n_sqe_pages;
+	unsigned short			n_sqe_list_pages;
 	struct page			**ring_pages;
 	struct page			**sqe_pages;
+	struct page			**sqe_list_pages;
 };
 
 struct io_tw_state {
