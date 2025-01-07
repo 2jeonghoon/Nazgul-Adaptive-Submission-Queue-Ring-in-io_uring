@@ -2353,7 +2353,7 @@ static bool io_get_sqe(struct io_ring_ctx *ctx, const struct io_uring_sqe **sqe)
 	}
 
 	// PRINTK("ctx->sq_sqes:%p\n", ctx->sq_sqes);
-	*sqe = &ctx->sq_sqes[head];
+	*sqe = &ctx->sq_sqes_list[ctx->cached_sq_list_tail][head];
 	return true;
 }
 
@@ -2629,7 +2629,7 @@ static void io_rings_free(struct io_ring_ctx *ctx)
 	if (!(ctx->flags & IORING_SETUP_NO_MMAP)) {
 		io_pages_unmap(ctx->rings, &ctx->ring_pages, &ctx->n_ring_pages,
 				true);
-		io_pages_unmap(ctx->sq_sqes, &ctx->sqe_pages, &ctx->n_sqe_pages,
+		io_pages_unmap(ctx->sq_sqes_list[ctx->cached_sq_list_tail], &ctx->sqe_pages, &ctx->n_sqe_pages,
 				true);
 	} else {
 		io_pages_free(&ctx->ring_pages, ctx->n_ring_pages);
@@ -2637,11 +2637,11 @@ static void io_rings_free(struct io_ring_ctx *ctx)
 		io_pages_free(&ctx->sqe_pages, ctx->n_sqe_pages);
 		ctx->n_sqe_pages = 0;
 		vunmap(ctx->rings);
-		vunmap(ctx->sq_sqes);
+		vunmap(ctx->sq_sqes_list[ctx->cached_sq_list_tail]);
 	}
 
 	ctx->rings = NULL;
-	ctx->sq_sqes = NULL;
+	ctx->sq_sqes_list[ctx->cached_sq_list_tail] = NULL;
 }
 
 static unsigned long rings_size(struct io_ring_ctx *ctx, unsigned int sq_entries,
@@ -3487,7 +3487,7 @@ static __cold int io_allocate_scq_urings(struct io_ring_ctx *ctx,
 		return PTR_ERR(ptr);
 	}
 
-	if (ctx->flags & IORING_SETUP_SQ_ADAPTIVE) {
+	// if (ctx->flags & IORING_SETUP_SQ_ADAPTIVE) {
 		PRINTK("\t==== start sqe list allocation ====\n");
 		// size_t sqe_list_size = array_size(sizeof(struct io_uring_sqe*), ctx->sq_list_entries);
 		size_t sqe_list_size = array_size(sizeof(struct io_uring_sqe*), 10);
@@ -3495,10 +3495,10 @@ static __cold int io_allocate_scq_urings(struct io_ring_ctx *ctx,
 		ctx->sq_sqes_list = io_pages_map(&ctx->sqe_list_pages, &ctx->n_sqe_list_pages, sqe_list_size);
 		ctx->sq_sqes_list[0] = ptr;
 		PRINTK("\t==== finish sqe list allocation ====\n");
-	}
+	// }
 
 	PRINTK("sq_sqes:%p. This pointer is created by io_pages_map\n", ptr);
-	ctx->sq_sqes = ptr;
+	// ctx->sq_sqes = ptr;
 	PRINTK("==== finish io_allocate_scq_urings ====\n");
 	return 0;
 }

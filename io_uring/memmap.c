@@ -74,7 +74,7 @@ void *io_pages_map(struct page ***out_pages, unsigned short *npages,
 	if (!pages)
 		return ERR_PTR(-ENOMEM);
 
-	PRINTK("io_mem_alloc_comound(%p, %d, %zu, 0x%x)\n", pages, nr_pages, size, gfp);
+	PRINTK("io_mem_alloc_compound(%p, %d, %zu, 0x%x)\n", pages, nr_pages, size, gfp);
 	ret = io_mem_alloc_compound(pages, nr_pages, size, gfp);
 	if (!IS_ERR(ret))
 		goto done;
@@ -215,7 +215,7 @@ static void *io_uring_validate_mmap_request(struct file *file, loff_t pgoff,
 		/* Don't allow mmap if the ring was setup without it */
 		if (ctx->flags & IORING_SETUP_NO_MMAP)
 			return ERR_PTR(-EINVAL);
-		return ctx->sq_sqes;
+		return ctx->sq_sqes_list;
 	case IORING_OFF_PBUF_RING: {
 		struct io_buffer_list *bl;
 		unsigned int bgid;

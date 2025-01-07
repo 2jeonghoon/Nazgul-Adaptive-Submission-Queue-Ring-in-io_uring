@@ -190,10 +190,11 @@ struct io_ring_ctx {
 	struct {
 		struct mutex		uring_lock;
 		u32			*sq_array;
-		struct io_uring_sqe	*sq_sqes;
+		// struct io_uring_sqe	*sq_sqes;
 		unsigned		cached_sq_head;
 		unsigned		sq_entries;
 		struct io_uring_sqe	**sq_sqes_list;
+		unsigned		cached_sq_list_tail;
 		unsigned		sq_list_entries;
 		struct io_rsrc_node	*rsrc_node;
 		atomic_t		cancel_seq;
