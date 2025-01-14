@@ -2281,31 +2281,25 @@ static void io_commit_sqring(struct io_ring_ctx *ctx)
 
 static bool io_expand_sqring(struct io_ring_ctx *ctx) 
 {
-	unsigned int size = ctx->sq_entries;
-	size_t ring_sz = size * sizeof(struct io_uring_sqe);
+	void* ptr;
 
-	void *new_sq_ring;
-
-	// Reallocate submission queue ring
-
-	new_sq_ring = vzalloc(ring_sz);
-
-	if (!new_sq_ring) {
-		pr_err("Failed to allocate memory for expanded SQ ring.\n");
-	        return false;
+	if (!(ctx->flags & IORING_SETUP_NO_MMAP)) {
+//		PRINTK("\tbefore: !IORING_SETUP_NO_MMAP,ptr: %p, ctx->sqe_pages:%p, ctx->n_sqe_pages:%d, size:%d\n", ptr, ctx->sqe_pages, ctx->n_sqe_pages, size);
+//		ptr = io_pages_map(&ctx->sqe_pages, &ctx->n_sqe_pages, size);
+//		PRINTK("\tafter: io_pages_map()(sqe), ptr:%p, ctx->sqe_pages:%p, ctx->n_sqe_pages:%d, size:%d\n", ptr, ctx->sqe_pages, ctx->n_sqe_pages, size);
 	}
+	else {
+//		PRINTK("\tbefore: IORING_SETUP_NO_MMAP Double, so call io_sqes_map(ctx, p->sq_off.user_addr, size)\n");
+//		ptr = io_sqes_map(ctx, p->sq_off.user_addr, size);
+//		PRINTK("\tafter: io_sqes_map(), p->sq_off.user_addr:%p\n", p->sq_off.user_addr);
+	}
+	
+//	PRINTK("Submission queue ring successfully expanded to %u entries.\n", size);
 
-	// list_add_tail(new_sq_ring, &ctx->rings->sq);
+	if(!ptr)
+		return NULL;
 
-	// Copy existing SQEs to the new ring 
-/*	if (ctx->sq_ring_ptr) {
-		memcpy(new_sq_ring, ctx->sq_ring_ptr, size * sizeof(struct io_uring_sqe));
-		vfree(ctx->sq_ring_ptr); // Free old ring
-	} */
-
-	pr_info("Submission queue ring successfully expanded to %u entries.\n", size);
-
-	return true;
+	return ptr;
 }
 
 /*
@@ -3488,13 +3482,15 @@ static __cold int io_allocate_scq_urings(struct io_ring_ctx *ctx,
 	}
 
 	// if (ctx->flags & IORING_SETUP_SQ_ADAPTIVE) {
-		PRINTK("\t==== start sqe list allocation ====\n");
+	PRINTK("\t==== start sqe list allocation ====\n");
 		// size_t sqe_list_size = array_size(sizeof(struct io_uring_sqe*), ctx->sq_list_entries);
-		size_t sqe_list_size = array_size(sizeof(struct io_uring_sqe*), 10);
-		PRINTK("sqe_list_size:%zu\n", sqe_list_size);
-		ctx->sq_sqes_list = io_pages_map(&ctx->sqe_list_pages, &ctx->n_sqe_list_pages, sqe_list_size);
-		ctx->sq_sqes_list[0] = ptr;
-		PRINTK("\t==== finish sqe list allocation ====\n");
+	
+	// io_expand_sqring(ctx);
+	size_t sqe_list_size = array_size(sizeof(struct io_uring_sqe*), 10);
+	PRINTK("sqe_list_size:%zu\n", sqe_list_size);
+	ctx->sq_sqes_list = io_pages_map(&ctx->sqe_list_pages, &ctx->n_sqe_list_pages, sqe_list_size);
+	ctx->sq_sqes_list[0] = ptr;
+	PRINTK("\t==== finish sqe list allocation ====\n");
 	// }
 
 	PRINTK("sq_sqes:%p. This pointer is created by io_pages_map\n", ptr);
@@ -3502,6 +3498,8 @@ static __cold int io_allocate_scq_urings(struct io_ring_ctx *ctx,
 	PRINTK("==== finish io_allocate_scq_urings ====\n");
 	return 0;
 }
+
+
 
 static int io_uring_install_fd(struct file *file)
 {

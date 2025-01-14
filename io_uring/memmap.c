@@ -204,14 +204,19 @@ static void *io_uring_validate_mmap_request(struct file *file, loff_t pgoff,
 	struct io_ring_ctx *ctx = file->private_data;
 	loff_t offset = pgoff << PAGE_SHIFT;
 
+	PRINTK("====io_uring_validate_mmap_request====\n");
+
 	switch ((pgoff << PAGE_SHIFT) & IORING_OFF_MMAP_MASK) {
 	case IORING_OFF_SQ_RING:
 	case IORING_OFF_CQ_RING:
 		/* Don't allow mmap if the ring was setup without it */
+		PRINTK("====finish io_uring_validate_mmap_request===\n");
 		if (ctx->flags & IORING_SETUP_NO_MMAP)
 			return ERR_PTR(-EINVAL);
 		return ctx->rings;
 	case IORING_OFF_SQES:
+		PRINTK("\tcase IORING_OFF_SQES\n");
+		PRINTK("====finish io_uring_validate_mmap_request===\n");
 		/* Don't allow mmap if the ring was setup without it */
 		if (ctx->flags & IORING_SETUP_NO_MMAP)
 			return ERR_PTR(-EINVAL);
@@ -247,6 +252,7 @@ int io_uring_mmap_pages(struct io_ring_ctx *ctx, struct vm_area_struct *vma,
 
 __cold int io_uring_mmap(struct file *file, struct vm_area_struct *vma)
 {
+	PRINTK("==== CONFIG_MMU io_uring_mmap start ====\n");
 	struct io_ring_ctx *ctx = file->private_data;
 	size_t sz = vma->vm_end - vma->vm_start;
 	long offset = vma->vm_pgoff << PAGE_SHIFT;
@@ -277,6 +283,8 @@ unsigned long io_uring_get_unmapped_area(struct file *filp, unsigned long addr,
 					 unsigned long flags)
 {
 	void *ptr;
+
+	PRINTK("==== CONFIG_MMU io_uring_get_unmapped_area(filp, addr, len, pgoff, flgs) start ====\n");
 
 	/*
 	 * Do not allow to map to user-provided address to avoid breaking the
@@ -312,6 +320,9 @@ unsigned long io_uring_get_unmapped_area(struct file *filp, unsigned long addr,
 #else
 	addr = 0UL;
 #endif
+
+	PRINTK("==== io_uring_get_unmapped_area finish ====\n");
+
 	return mm_get_unmapped_area(current->mm, filp, addr, len, pgoff, flags);
 }
 
@@ -319,11 +330,13 @@ unsigned long io_uring_get_unmapped_area(struct file *filp, unsigned long addr,
 
 int io_uring_mmap(struct file *file, struct vm_area_struct *vma)
 {
+	PRINTK("==== !CONFIG_MMU io_uring_mmap(*file, *vma) ====\n");
 	return is_nommu_shared_mapping(vma->vm_flags) ? 0 : -EINVAL;
 }
 
 unsigned int io_uring_nommu_mmap_capabilities(struct file *file)
 {
+	PRINTK("==== !CONFIG_MMU io_uring_nommu_mmap_capabilities(*file) ====\n");
 	return NOMMU_MAP_DIRECT | NOMMU_MAP_READ | NOMMU_MAP_WRITE;
 }
 
@@ -332,11 +345,14 @@ unsigned long io_uring_get_unmapped_area(struct file *file, unsigned long addr,
 					 unsigned long flags)
 {
 	void *ptr;
+	
+	PRINTK("==== io_uring_get_unmapped_area start ====\n");
 
 	ptr = io_uring_validate_mmap_request(file, pgoff, len);
-	if (IS_ERR(ptr))
+	if (IS_ERR(ptr))io_uring_validate_mmap_request
 		return PTR_ERR(ptr);
 
+	PRINTK("==== io_uring_get_unmapped_area finish ====\n");
 	return (unsigned long) ptr;
 }
 
