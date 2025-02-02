@@ -57,35 +57,70 @@ err:
 	return ERR_PTR(-ENOMEM);
 }
 
-void *io_pages_map(struct page ***out_pages, unsigned short *npages,
-		   size_t size)
+
+void *io_pages_map_3d(struct page ****out_pages, unsigned short *npages_3d, size_t size_3d)
 {
-	PRINTK("memmap.c: io_pages_map()\n");
+	PRINTK("\t====io_pages_map_3d start====\n");
+	gfp_t gfp = GFP_KERNEL_ACCOUNT | __GFP_ZERO | __GFP_NOWARN;
+	int nr_pages_3d;
+	void *ret;
+
+	nr_pages_3d = (size_3d + PAGE_SIZE - 1) >> PAGE_SHIFT;
+
+	ret = kvmalloc_array(nr_pages_3d, sizeof(struct page **), gfp);
+
+	if (!IS_ERR(ret)) {
+		*out_pages = ret;
+		*npages_3d = nr_pages_3d;
+
+		PRINTK("\t\tpages_3d:%p\n", ret);
+		PRINTK("\t====io_pages_map_3d fin====\n");
+		return ret;
+	}
+	PRINTK("\t\tIS_ERR(ret)\n");
+
+	kvfree(ret);
+	*out_pages = NULL;
+	*npages_3d = 0;
+	return ret;
+}
+
+void *io_pages_map(struct page ***out_pages, unsigned short *npages,
+		      size_t size)
+{
+	PRINTK("\t====io_pages_map start====\n");
 	gfp_t gfp = GFP_KERNEL_ACCOUNT | __GFP_ZERO | __GFP_NOWARN;
 	struct page **pages;
 	int nr_pages;
 	void *ret;
 
 	nr_pages = (size + PAGE_SIZE - 1) >> PAGE_SHIFT;
-	
-	PRINTK("nr_pages: %d\n", nr_pages);
+
+	PRINTK("\t\tnr_pages: %d\n", nr_pages);
 
 	pages = kvmalloc_array(nr_pages, sizeof(struct page *), gfp);
 	if (!pages)
 		return ERR_PTR(-ENOMEM);
 
-	PRINTK("io_mem_alloc_compound(%p, %d, %zu, 0x%x)\n", pages, nr_pages, size, gfp);
+	PRINTK("\t\tio_mem_alloc_compound(%p, %d, %zu, 0x%x)\n", pages, nr_pages, size, gfp);
+
 	ret = io_mem_alloc_compound(pages, nr_pages, size, gfp);
 	if (!IS_ERR(ret))
 		goto done;
-	PRINTK("io_mem_alloc_single(%p, %d, %zu, 0x%x)\n", pages, nr_pages, size, gfp);
+
+	PRINTK("\t\tio_mem_alloc_single(%p, %d, %zu, 0x%x)\n", pages, nr_pages, size, gfp);
+
 	ret = io_mem_alloc_single(pages, nr_pages, size, gfp);
 	if (!IS_ERR(ret)) {
 done:
 		*out_pages = pages;
 		*npages = nr_pages;
+
+		PRINTK("\t====io_pages_map fin====\n");
 		return ret;
 	}
+
+	PRINTK("\t\tIS_ERR(ret)\n");
 
 	kvfree(pages);
 	*out_pages = NULL;
@@ -152,7 +187,7 @@ struct page **io_pin_pages(unsigned long uaddr, unsigned long len, int *npages)
 		return ERR_PTR(-ENOMEM);
 
 	ret = pin_user_pages_fast(uaddr, nr_pages, FOLL_WRITE | FOLL_LONGTERM,
-					pages);
+				  pages);
 	/* success, mapped all pages */
 	if (ret == nr_pages) {
 		*npages = nr_pages;
@@ -220,20 +255,21 @@ static void *io_uring_validate_mmap_request(struct file *file, loff_t pgoff,
 		/* Don't allow mmap if the ring was setup without it */
 		if (ctx->flags & IORING_SETUP_NO_MMAP)
 			return ERR_PTR(-EINVAL);
-		return ctx->sq_sqes_list;
+		return ctx->sq_sqes_arr[0];
 	case IORING_OFF_PBUF_RING: {
 		struct io_buffer_list *bl;
 		unsigned int bgid;
 		void *ptr;
 
-		bgid = (offset & ~IORING_OFF_MMAP_MASK) >> IORING_OFF_PBUF_SHIFT;
+		bgid = (offset & ~IORING_OFF_MMAP_MASK) >>
+		       IORING_OFF_PBUF_SHIFT;
 		bl = io_pbuf_get_bl(ctx, bgid);
 		if (IS_ERR(bl))
 			return bl;
 		ptr = bl->buf_ring;
 		io_put_bl(ctx, bl);
 		return ptr;
-		}
+	}
 	}
 
 	return ERR_PTR(-EINVAL);
@@ -266,11 +302,15 @@ __cold int io_uring_mmap(struct file *file, struct vm_area_struct *vma)
 	switch (offset & IORING_OFF_MMAP_MASK) {
 	case IORING_OFF_SQ_RING:
 	case IORING_OFF_CQ_RING:
-		npages = min(ctx->n_ring_pages, (sz + PAGE_SIZE - 1) >> PAGE_SHIFT);
+		npages = min(ctx->n_ring_pages,
+			     (sz + PAGE_SIZE - 1) >> PAGE_SHIFT);
 		return io_uring_mmap_pages(ctx, vma, ctx->ring_pages, npages);
 	case IORING_OFF_SQES:
-		return io_uring_mmap_pages(ctx, vma, ctx->sqe_pages,
-						ctx->n_sqe_pages);
+		PRINTK("\t\tctx->cached_sqe_arr_tail:%d\n", ctx->cached_sqe_arr_tail);
+		return io_uring_mmap_pages(
+			//ctx, vma, ctx->sqe_pages[ctx->cached_sqe_arr_tail],
+			ctx, vma, ctx->sqe_pages[0],
+			ctx->n_sqe_pages);
 	case IORING_OFF_PBUF_RING:
 		return io_pbuf_mmap(file, vma);
 	}
@@ -313,9 +353,9 @@ unsigned long io_uring_get_unmapped_area(struct file *filp, unsigned long addr,
 	 */
 	filp = NULL;
 	flags |= MAP_SHARED;
-	pgoff = 0;	/* has been translated to ptr above */
+	pgoff = 0; /* has been translated to ptr above */
 #ifdef SHM_COLOUR
-	addr = (uintptr_t) ptr;
+	addr = (uintptr_t)ptr;
 	pgoff = addr >> PAGE_SHIFT;
 #else
 	addr = 0UL;
@@ -345,15 +385,15 @@ unsigned long io_uring_get_unmapped_area(struct file *file, unsigned long addr,
 					 unsigned long flags)
 {
 	void *ptr;
-	
+
 	PRINTK("==== io_uring_get_unmapped_area start ====\n");
 
 	ptr = io_uring_validate_mmap_request(file, pgoff, len);
-	if (IS_ERR(ptr))io_uring_validate_mmap_request
-		return PTR_ERR(ptr);
+	if (IS_ERR(ptr))
+		io_uring_validate_mmap_request return PTR_ERR(ptr);
 
 	PRINTK("==== io_uring_get_unmapped_area finish ====\n");
-	return (unsigned long) ptr;
+	return (unsigned long)ptr;
 }
 
 #endif /* !CONFIG_MMU */

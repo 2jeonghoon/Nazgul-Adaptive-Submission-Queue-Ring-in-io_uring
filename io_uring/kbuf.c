@@ -23,12 +23,12 @@
 struct kmem_cache *io_buf_cachep;
 
 struct io_provide_buf {
-	struct file			*file;
-	__u64				addr;
-	__u32				len;
-	__u32				bgid;
-	__u32				nbufs;
-	__u16				bid;
+	struct file *file;
+	__u64 addr;
+	__u32 len;
+	__u32 bgid;
+	__u32 nbufs;
+	__u16 bid;
 };
 
 static inline struct io_buffer_list *io_buffer_get_list(struct io_ring_ctx *ctx,
@@ -199,7 +199,7 @@ void __user *io_buffer_select(struct io_kiocb *req, size_t *len,
 }
 
 /* cap it at a reasonable 256, will be one page even for 4K */
-#define PEEK_MAX_IMPORT		256
+#define PEEK_MAX_IMPORT 256
 
 static int io_ring_buffers_peek(struct io_kiocb *req, struct buf_sel_arg *arg,
 				struct io_buffer_list *bl)
@@ -224,7 +224,7 @@ static int io_ring_buffers_peek(struct io_kiocb *req, struct buf_sel_arg *arg,
 		if (unlikely(!len))
 			return -ENOBUFS;
 		needed = (arg->max_len + len - 1) / len;
-		needed = min_not_zero(needed, (size_t) PEEK_MAX_IMPORT);
+		needed = min_not_zero(needed, (size_t)PEEK_MAX_IMPORT);
 		if (nr_avail > needed)
 			nr_avail = needed;
 	}
@@ -233,7 +233,8 @@ static int io_ring_buffers_peek(struct io_kiocb *req, struct buf_sel_arg *arg,
 	 * only alloc a bigger array if we know we have data to map, eg not
 	 * a speculative peek operation.
 	 */
-	if (arg->mode & KBUF_MODE_EXPAND && nr_avail > nr_iovs && arg->max_len) {
+	if (arg->mode & KBUF_MODE_EXPAND && nr_avail > nr_iovs &&
+	    arg->max_len) {
 		iov = kmalloc_array(nr_avail, sizeof(struct iovec), GFP_KERNEL);
 		if (unlikely(!iov))
 			return -ENOMEM;
@@ -301,7 +302,8 @@ int io_buffers_select(struct io_kiocb *req, struct buf_sel_arg *arg,
 			req->buf_list->head += ret;
 		}
 	} else {
-		ret = io_provided_buffers_select(req, &arg->out_len, bl, arg->iovs);
+		ret = io_provided_buffers_select(req, &arg->out_len, bl,
+						 arg->iovs);
 	}
 out_unlock:
 	io_ring_submit_unlock(ctx, issue_flags);
@@ -350,7 +352,7 @@ static int __io_remove_buffers(struct io_ring_ctx *ctx,
 					unpin_user_page(bl->buf_pages[j]);
 			}
 			io_pages_unmap(bl->buf_ring, &bl->buf_pages,
-					&bl->buf_nr_pages, bl->is_mmap);
+				       &bl->buf_nr_pages, bl->is_mmap);
 			bl->is_mmap = 0;
 		}
 		/* make sure it's seen as empty */
@@ -452,7 +454,8 @@ int io_remove_buffers(struct io_kiocb *req, unsigned int issue_flags)
 	return IOU_OK;
 }
 
-int io_provide_buffers_prep(struct io_kiocb *req, const struct io_uring_sqe *sqe)
+int io_provide_buffers_prep(struct io_kiocb *req,
+			    const struct io_uring_sqe *sqe)
 {
 	unsigned long size, tmp_check;
 	struct io_provide_buf *p = io_kiocb_to_cmd(req, struct io_provide_buf);
@@ -469,7 +472,7 @@ int io_provide_buffers_prep(struct io_kiocb *req, const struct io_uring_sqe *sqe
 	p->len = READ_ONCE(sqe->len);
 
 	if (check_mul_overflow((unsigned long)p->len, (unsigned long)p->nbufs,
-				&size))
+			       &size))
 		return -EOVERFLOW;
 	if (check_add_overflow((unsigned long)p->addr, size, &tmp_check))
 		return -EOVERFLOW;
@@ -504,7 +507,7 @@ static int io_refill_buffer_cache(struct io_ring_ctx *ctx)
 		spin_lock(&ctx->completion_lock);
 		if (!list_empty(&ctx->io_buffers_comp)) {
 			list_splice_init(&ctx->io_buffers_comp,
-						&ctx->io_buffers_cache);
+					 &ctx->io_buffers_cache);
 			spin_unlock(&ctx->completion_lock);
 			return 0;
 		}
@@ -517,7 +520,7 @@ static int io_refill_buffer_cache(struct io_ring_ctx *ctx)
 	 */
 
 	allocated = kmem_cache_alloc_bulk(io_buf_cachep, GFP_KERNEL_ACCOUNT,
-					  ARRAY_SIZE(bufs), (void **) bufs);
+					  ARRAY_SIZE(bufs), (void **)bufs);
 	if (unlikely(!allocated)) {
 		/*
 		 * Bulk alloc is all-or-nothing. If we fail to get a batch,
@@ -547,7 +550,7 @@ static int io_add_buffers(struct io_ring_ctx *ctx, struct io_provide_buf *pbuf,
 		    io_refill_buffer_cache(ctx))
 			break;
 		buf = list_first_entry(&ctx->io_buffers_cache, struct io_buffer,
-					list);
+				       list);
 		list_move_tail(&buf->list, &bl->buf_list);
 		buf->addr = addr;
 		buf->len = min_t(__u32, pbuf->len, MAX_RW_COUNT);
@@ -633,7 +636,7 @@ static int io_pin_pbuf_ring(struct io_uring_buf_reg *reg,
 	 * should use IOU_PBUF_RING_MMAP instead, and liburing will handle
 	 * this transparently.
 	 */
-	if ((reg->ring_addr | (unsigned long) br) & (SHM_COLOUR - 1)) {
+	if ((reg->ring_addr | (unsigned long)br) & (SHM_COLOUR - 1)) {
 		ret = -EINVAL;
 		goto error_unpin;
 	}
@@ -659,7 +662,8 @@ static int io_alloc_pbuf_ring(struct io_ring_ctx *ctx,
 
 	ring_size = reg->ring_entries * sizeof(struct io_uring_buf_ring);
 
-	bl->buf_ring = io_pages_map(&bl->buf_pages, &bl->buf_nr_pages, ring_size);
+	bl->buf_ring =
+		io_pages_map(&bl->buf_pages, &bl->buf_nr_pages, ring_size);
 	if (IS_ERR(bl->buf_ring)) {
 		bl->buf_ring = NULL;
 		return -ENOMEM;

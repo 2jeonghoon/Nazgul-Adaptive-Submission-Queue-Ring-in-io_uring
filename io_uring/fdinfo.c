@@ -17,7 +17,7 @@
 
 #ifdef CONFIG_PROC_FS
 static __cold int io_uring_show_cred(struct seq_file *m, unsigned int id,
-		const struct cred *cred)
+				     const struct cred *cred)
 {
 	struct user_namespace *uns = seq_user_ns(m);
 	struct group_info *gi;
@@ -37,7 +37,7 @@ static __cold int io_uring_show_cred(struct seq_file *m, unsigned int id,
 	gi = cred->group_info;
 	for (g = 0; g < gi->ngroups; g++) {
 		seq_put_decimal_ull(m, g ? " " : "",
-					from_kgid_munged(uns, gi->gid[g]));
+				    from_kgid_munged(uns, gi->gid[g]));
 	}
 	seq_puts(m, "\n\tCapEff:\t");
 	cap = cred->cap_effective;
@@ -56,7 +56,8 @@ __cold void io_uring_show_fdinfo(struct seq_file *m, struct file *file)
 	struct io_overflow_cqe *ocqe;
 	struct io_rings *r = ctx->rings;
 	struct rusage sq_usage;
-	unsigned int sq_mask = ctx->sq_entries - 1, cq_mask = ctx->cq_entries - 1;
+	unsigned int sq_mask = ctx->sq_entries - 1,
+		     cq_mask = ctx->cq_entries - 1;
 	unsigned int sq_head = READ_ONCE(r->sq.head);
 
 	unsigned int sq_tail = READ_ONCE(r->sq.tail);
@@ -101,22 +102,24 @@ __cold void io_uring_show_fdinfo(struct seq_file *m, struct file *file)
 		sq_idx = READ_ONCE(ctx->sq_array[entry & sq_mask]);
 		if (sq_idx > sq_mask)
 			continue;
-		sqe = &ctx->sq_sqes_list[ctx->cached_sq_list_tail][sq_idx << sq_shift];
-		seq_printf(m, "%5u: opcode:%s, fd:%d, flags:%x, off:%llu, "
-			      "addr:0x%llx, rw_flags:0x%x, buf_index:%d "
-			      "user_data:%llu",
+		sqe = &ctx->sq_sqes_arr[ctx->cached_sqe_arr_tail]
+					[sq_idx << sq_shift];
+		seq_printf(m,
+			   "%5u: opcode:%s, fd:%d, flags:%x, off:%llu, "
+			   "addr:0x%llx, rw_flags:0x%x, buf_index:%d "
+			   "user_data:%llu",
 			   sq_idx, io_uring_get_opcode(sqe->opcode), sqe->fd,
-			   sqe->flags, (unsigned long long) sqe->off,
-			   (unsigned long long) sqe->addr, sqe->rw_flags,
+			   sqe->flags, (unsigned long long)sqe->off,
+			   (unsigned long long)sqe->addr, sqe->rw_flags,
 			   sqe->buf_index, sqe->user_data);
 		if (sq_shift) {
-			u64 *sqeb = (void *) (sqe + 1);
+			u64 *sqeb = (void *)(sqe + 1);
 			int size = sizeof(struct io_uring_sqe) / sizeof(u64);
 			int j;
 
 			for (j = 0; j < size; j++) {
 				seq_printf(m, ", e%d:0x%llx", j,
-						(unsigned long long) *sqeb);
+					   (unsigned long long)*sqeb);
 				sqeb++;
 			}
 		}
@@ -126,14 +129,15 @@ __cold void io_uring_show_fdinfo(struct seq_file *m, struct file *file)
 	cq_entries = min(cq_tail - cq_head, ctx->cq_entries);
 	for (i = 0; i < cq_entries; i++) {
 		unsigned int entry = i + cq_head;
-		struct io_uring_cqe *cqe = &r->cqes[(entry & cq_mask) << cq_shift];
+		struct io_uring_cqe *cqe =
+			&r->cqes[(entry & cq_mask) << cq_shift];
 
 		seq_printf(m, "%5u: user_data:%llu, res:%d, flag:%x",
 			   entry & cq_mask, cqe->user_data, cqe->res,
 			   cqe->flags);
 		if (cq_shift)
 			seq_printf(m, ", extra1:%llu, extra2:%llu\n",
-					cqe->big_cqe[0], cqe->big_cqe[1]);
+				   cqe->big_cqe[0], cqe->big_cqe[1]);
 		seq_printf(m, "\n");
 	}
 
@@ -156,8 +160,8 @@ __cold void io_uring_show_fdinfo(struct seq_file *m, struct file *file)
 			sq_pid = sq->task_pid;
 			sq_cpu = sq->sq_cpu;
 			getrusage(sq->thread, RUSAGE_SELF, &sq_usage);
-			sq_total_time = (sq_usage.ru_stime.tv_sec * 1000000
-					 + sq_usage.ru_stime.tv_usec);
+			sq_total_time = (sq_usage.ru_stime.tv_sec * 1000000 +
+					 sq_usage.ru_stime.tv_usec);
 			sq_work_time = sq->work_time;
 		}
 	}
@@ -200,14 +204,14 @@ __cold void io_uring_show_fdinfo(struct seq_file *m, struct file *file)
 		spin_lock(&hb->lock);
 		hlist_for_each_entry(req, &hb->list, hash_node)
 			seq_printf(m, "  op=%d, task_works=%d\n", req->opcode,
-					task_work_pending(req->task));
+				   task_work_pending(req->task));
 		spin_unlock(&hb->lock);
 
 		if (!has_lock)
 			continue;
 		hlist_for_each_entry(req, &hbl->list, hash_node)
 			seq_printf(m, "  op=%d, task_works=%d\n", req->opcode,
-					task_work_pending(req->task));
+				   task_work_pending(req->task));
 	}
 
 	if (has_lock)
@@ -220,7 +224,6 @@ __cold void io_uring_show_fdinfo(struct seq_file *m, struct file *file)
 
 		seq_printf(m, "  user_data=%llu, res=%d, flags=%x\n",
 			   cqe->user_data, cqe->res, cqe->flags);
-
 	}
 
 	spin_unlock(&ctx->completion_lock);
