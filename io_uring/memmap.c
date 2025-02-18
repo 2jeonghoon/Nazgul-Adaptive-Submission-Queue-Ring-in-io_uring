@@ -12,7 +12,6 @@
 
 #include "memmap.h"
 #include "kbuf.h"
-#include "debug.h"
 
 static void *io_mem_alloc_compound(struct page **pages, int nr_pages,
 				   size_t size, gfp_t gfp)
@@ -57,70 +56,30 @@ err:
 	return ERR_PTR(-ENOMEM);
 }
 
-
-void *io_pages_map_3d(struct page ****out_pages, unsigned short *npages_3d, size_t size_3d)
-{
-	PRINTK("\t====io_pages_map_3d start====\n");
-	gfp_t gfp = GFP_KERNEL_ACCOUNT | __GFP_ZERO | __GFP_NOWARN;
-	int nr_pages_3d;
-	void *ret;
-
-	nr_pages_3d = (size_3d + PAGE_SIZE - 1) >> PAGE_SHIFT;
-
-	ret = kvmalloc_array(nr_pages_3d, sizeof(struct page **), gfp);
-
-	if (!IS_ERR(ret)) {
-		*out_pages = ret;
-		*npages_3d = nr_pages_3d;
-
-		PRINTK("\t\tpages_3d:%p\n", ret);
-		PRINTK("\t====io_pages_map_3d fin====\n");
-		return ret;
-	}
-	PRINTK("\t\tIS_ERR(ret)\n");
-
-	kvfree(ret);
-	*out_pages = NULL;
-	*npages_3d = 0;
-	return ret;
-}
-
 void *io_pages_map(struct page ***out_pages, unsigned short *npages,
-		      size_t size)
+		   size_t size)
 {
-	PRINTK("\t====io_pages_map start====\n");
 	gfp_t gfp = GFP_KERNEL_ACCOUNT | __GFP_ZERO | __GFP_NOWARN;
 	struct page **pages;
 	int nr_pages;
 	void *ret;
 
 	nr_pages = (size + PAGE_SIZE - 1) >> PAGE_SHIFT;
-
-	PRINTK("\t\tnr_pages: %d\n", nr_pages);
-
 	pages = kvmalloc_array(nr_pages, sizeof(struct page *), gfp);
 	if (!pages)
 		return ERR_PTR(-ENOMEM);
 
-	PRINTK("\t\tio_mem_alloc_compound(%p, %d, %zu, 0x%x)\n", pages, nr_pages, size, gfp);
-
 	ret = io_mem_alloc_compound(pages, nr_pages, size, gfp);
 	if (!IS_ERR(ret))
 		goto done;
-
-	PRINTK("\t\tio_mem_alloc_single(%p, %d, %zu, 0x%x)\n", pages, nr_pages, size, gfp);
 
 	ret = io_mem_alloc_single(pages, nr_pages, size, gfp);
 	if (!IS_ERR(ret)) {
 done:
 		*out_pages = pages;
 		*npages = nr_pages;
-
-		PRINTK("\t====io_pages_map fin====\n");
 		return ret;
 	}
-
-	PRINTK("\t\tIS_ERR(ret)\n");
 
 	kvfree(pages);
 	*out_pages = NULL;
@@ -239,23 +198,18 @@ static void *io_uring_validate_mmap_request(struct file *file, loff_t pgoff,
 	struct io_ring_ctx *ctx = file->private_data;
 	loff_t offset = pgoff << PAGE_SHIFT;
 
-	PRINTK("====io_uring_validate_mmap_request====\n");
-
 	switch ((pgoff << PAGE_SHIFT) & IORING_OFF_MMAP_MASK) {
 	case IORING_OFF_SQ_RING:
 	case IORING_OFF_CQ_RING:
 		/* Don't allow mmap if the ring was setup without it */
-		PRINTK("====finish io_uring_validate_mmap_request===\n");
 		if (ctx->flags & IORING_SETUP_NO_MMAP)
 			return ERR_PTR(-EINVAL);
 		return ctx->rings;
 	case IORING_OFF_SQES:
-		PRINTK("\tcase IORING_OFF_SQES\n");
-		PRINTK("====finish io_uring_validate_mmap_request===\n");
 		/* Don't allow mmap if the ring was setup without it */
 		if (ctx->flags & IORING_SETUP_NO_MMAP)
 			return ERR_PTR(-EINVAL);
-		return ctx->sq_sqes_arr[0];
+		return ctx->sq_sqes;
 	case IORING_OFF_PBUF_RING: {
 		struct io_buffer_list *bl;
 		unsigned int bgid;
@@ -284,16 +238,26 @@ int io_uring_mmap_pages(struct io_ring_ctx *ctx, struct vm_area_struct *vma,
 	return vm_insert_pages(vma, vma->vm_start, pages, &nr_pages);
 }
 
+void io_uring_allocate_buffer(struct io_ring_ctx *ctx, int n)
+{
+	gfp_t gfp = GFP_KERNEL_ACCOUNT | __GFP_ZERO | __GFP_NOWARN;
+
+	ctx->sqe_pages = kvmalloc_array(n, sizeof(struct pages **), gfp);
+	ctx->sq_sqes_arr =
+		kvmalloc_array(n, sizeof(struct io_uring_sqe *), gfp);
+}
+
 #ifdef CONFIG_MMU
 
 __cold int io_uring_mmap(struct file *file, struct vm_area_struct *vma)
 {
-	PRINTK("==== CONFIG_MMU io_uring_mmap start ====\n");
 	struct io_ring_ctx *ctx = file->private_data;
 	size_t sz = vma->vm_end - vma->vm_start;
 	long offset = vma->vm_pgoff << PAGE_SHIFT;
 	unsigned int npages;
 	void *ptr;
+
+	printk("io_uring_mmap, vma:%p\n", vma);
 
 	ptr = io_uring_validate_mmap_request(file, vma->vm_pgoff, sz);
 	if (IS_ERR(ptr))
@@ -306,11 +270,9 @@ __cold int io_uring_mmap(struct file *file, struct vm_area_struct *vma)
 			     (sz + PAGE_SIZE - 1) >> PAGE_SHIFT);
 		return io_uring_mmap_pages(ctx, vma, ctx->ring_pages, npages);
 	case IORING_OFF_SQES:
-		PRINTK("\t\tctx->cached_sqe_arr_tail:%d\n", ctx->cached_sqe_arr_tail);
-		return io_uring_mmap_pages(
-			//ctx, vma, ctx->sqe_pages[ctx->cached_sqe_arr_tail],
-			ctx, vma, ctx->sqe_pages[0],
-			ctx->n_sqe_pages);
+		ctx->sqe_vma = vma;
+		return io_uring_mmap_pages(ctx, vma, ctx->sqe_pages[0],
+					   ctx->n_sqe_pages);
 	case IORING_OFF_PBUF_RING:
 		return io_pbuf_mmap(file, vma);
 	}
@@ -323,8 +285,6 @@ unsigned long io_uring_get_unmapped_area(struct file *filp, unsigned long addr,
 					 unsigned long flags)
 {
 	void *ptr;
-
-	PRINTK("==== CONFIG_MMU io_uring_get_unmapped_area(filp, addr, len, pgoff, flgs) start ====\n");
 
 	/*
 	 * Do not allow to map to user-provided address to avoid breaking the
@@ -360,9 +320,6 @@ unsigned long io_uring_get_unmapped_area(struct file *filp, unsigned long addr,
 #else
 	addr = 0UL;
 #endif
-
-	PRINTK("==== io_uring_get_unmapped_area finish ====\n");
-
 	return mm_get_unmapped_area(current->mm, filp, addr, len, pgoff, flags);
 }
 
@@ -370,13 +327,11 @@ unsigned long io_uring_get_unmapped_area(struct file *filp, unsigned long addr,
 
 int io_uring_mmap(struct file *file, struct vm_area_struct *vma)
 {
-	PRINTK("==== !CONFIG_MMU io_uring_mmap(*file, *vma) ====\n");
 	return is_nommu_shared_mapping(vma->vm_flags) ? 0 : -EINVAL;
 }
 
 unsigned int io_uring_nommu_mmap_capabilities(struct file *file)
 {
-	PRINTK("==== !CONFIG_MMU io_uring_nommu_mmap_capabilities(*file) ====\n");
 	return NOMMU_MAP_DIRECT | NOMMU_MAP_READ | NOMMU_MAP_WRITE;
 }
 
@@ -386,13 +341,10 @@ unsigned long io_uring_get_unmapped_area(struct file *file, unsigned long addr,
 {
 	void *ptr;
 
-	PRINTK("==== io_uring_get_unmapped_area start ====\n");
-
 	ptr = io_uring_validate_mmap_request(file, pgoff, len);
 	if (IS_ERR(ptr))
-		io_uring_validate_mmap_request return PTR_ERR(ptr);
+		return PTR_ERR(ptr);
 
-	PRINTK("==== io_uring_get_unmapped_area finish ====\n");
 	return (unsigned long)ptr;
 }
 

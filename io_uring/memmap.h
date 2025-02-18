@@ -6,16 +6,14 @@ void io_pages_free(struct page ***pages, int npages);
 int io_uring_mmap_pages(struct io_ring_ctx *ctx, struct vm_area_struct *vma,
 			struct page **pages, int npages);
 
-void *io_pages_map_3d(struct page ****out_pages, unsigned short *npages_3d,
-		      size_t size_3d);
 void *io_pages_map(struct page ***out_pages, unsigned short *npages,
-		      size_t size);
-
+		   size_t size);
 void io_pages_unmap(void *ptr, struct page ***pages, unsigned short *npages,
 		    bool put_pages);
 
 void *__io_uaddr_map(struct page ***pages, unsigned short *npages,
 		     unsigned long uaddr, size_t size);
+void io_uring_allocate_buffer(struct io_ring_ctx *ctx, int n);
 
 #ifndef CONFIG_MMU
 unsigned int io_uring_nommu_mmap_capabilities(struct file *file);

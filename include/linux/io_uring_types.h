@@ -120,7 +120,7 @@ struct io_rings {
 	atomic_t sq_flags;
 	u32 cq_flags;
 	u32 cq_overflow;
-	u32 sq_rings_entries;
+	//u32 sq_rings_entries;
 	struct io_uring_cqe cqes[] ____cacheline_aligned_in_smp;
 };
 
@@ -190,10 +190,9 @@ struct io_ring_ctx {
 	struct {
 		struct mutex uring_lock;
 		u32 *sq_array;
-		struct io_uring_sqe **sq_sqes_arr;
+		struct io_uring_sqe *sq_sqes;
 		unsigned cached_sq_head;
 		unsigned sq_entries;
-		// struct io_uring_sqe **sq_sqes_arr;
 		struct io_rsrc_node *rsrc_node;
 		atomic_t cancel_seq;
 		bool poll_multi_queue;
@@ -210,8 +209,8 @@ struct io_ring_ctx {
 		struct io_alloc_cache rw_cache;
 		struct io_alloc_cache uring_cache;
 		struct hlist_head cancelable_uring_cmd;
-		unsigned cached_sqe_arr_tail;
-		unsigned sqe_arr_entries;	
+		unsigned sq_arr_entries;
+		struct vm_area_struct *sqe_vma;
 	} ____cacheline_aligned_in_smp;
 	struct {
 		struct io_uring_cqe *cqe_cached;
@@ -283,10 +282,13 @@ struct io_ring_ctx {
 	unsigned evfd_last_cq_tail;
 	unsigned short n_ring_pages;
 	unsigned short n_sqe_pages;
-	unsigned short n_sqe_arr_pages;
+	// unsigned short n_sqe_arr_pages;
 	struct page **ring_pages;
 	struct page ***sqe_pages;
-	// struct page **sqe_arr_pages;
+
+	//unsigned cached_sqe_arr_tail;
+	//unsigned sqe_arr_entries;
+	struct io_uring_sqe **sq_sqes_arr;
 };
 
 struct io_tw_state {};

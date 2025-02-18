@@ -102,8 +102,6 @@
 #include "rw.h"
 #include "alloc_cache.h"
 
-#include "debug.h"
-
 #define IORING_MAX_ENTRIES 32768
 #define IORING_MAX_CQ_ENTRIES (2 * IORING_MAX_ENTRIES)
 
@@ -179,13 +177,11 @@ static struct ctl_table kernel_io_uring_disabled_table[] = {
 
 static inline unsigned int __io_cqring_events(struct io_ring_ctx *ctx)
 {
-	//	PRINTK("__io_cqring_events: use head\n");
 	return ctx->cached_cq_tail - READ_ONCE(ctx->rings->cq.head);
 }
 
 static inline unsigned int __io_cqring_events_user(struct io_ring_ctx *ctx)
 {
-	//	PRINTK("__io_cqring_events_user: use head\n");
 	return READ_ONCE(ctx->rings->cq.tail) - READ_ONCE(ctx->rings->cq.head);
 }
 
@@ -280,7 +276,6 @@ static int io_alloc_hash_table(struct io_hash_table *table, unsigned bits)
 
 static __cold struct io_ring_ctx *io_ring_ctx_alloc(struct io_uring_params *p)
 {
-	PRINTK("io_uring.c: io_ring_ctx_alloc()\n");
 	struct io_ring_ctx *ctx;
 	int hash_bits;
 	bool ret;
@@ -343,7 +338,7 @@ static __cold struct io_ring_ctx *io_ring_ctx_alloc(struct io_uring_params *p)
 	INIT_LIST_HEAD(&ctx->tctx_list);
 	ctx->submit_state.free_list.next = NULL;
 	INIT_HLIST_HEAD(&ctx->waitid_list);
-#ifdef CONFIG_FUTEXT
+#ifdef CONFIG_FUTEX
 	INIT_HLIST_HEAD(&ctx->futex_list);
 #endif
 	INIT_DELAYED_WORK(&ctx->fallback_work, io_fallback_req_func);
@@ -607,7 +602,6 @@ static void io_eventfd_flush_signal(struct io_ring_ctx *ctx)
 {
 	bool skip;
 
-	PRINTK("io_eventfd_flush_signal: use tail\n");
 	spin_lock(&ctx->completion_lock);
 
 	/*
@@ -781,8 +775,6 @@ static bool io_cqring_event_overflow(struct io_ring_ctx *ctx, u64 user_data,
 	size_t ocq_size = sizeof(struct io_overflow_cqe);
 	bool is_cqe32 = (ctx->flags & IORING_SETUP_CQE32);
 
-	PRINTK("io_cqring_event_overflow: use tail\n");
-
 	lockdep_assert_held(&ctx->completion_lock);
 
 	if (is_cqe32)
@@ -830,7 +822,6 @@ static void io_req_cqe_overflow(struct io_kiocb *req)
  */
 bool io_cqe_cache_refill(struct io_ring_ctx *ctx, bool overflow)
 {
-	PRINTK("io_cqe_cache_refill: use tail\n");
 	struct io_rings *rings = ctx->rings;
 	unsigned int off = ctx->cached_cq_tail & (ctx->cq_entries - 1);
 	unsigned int free, queued, len;
@@ -1525,7 +1516,6 @@ static __cold void io_iopoll_try_reap_events(struct io_ring_ctx *ctx)
 
 static int io_iopoll_check(struct io_ring_ctx *ctx, long min)
 {
-	PRINTK("io_iopoll_check: use tail\n");
 	unsigned int nr_events = 0;
 	unsigned long check_cq;
 
@@ -1611,7 +1601,6 @@ void io_req_task_complete(struct io_kiocb *req, struct io_tw_state *ts)
  */
 static void io_iopoll_req_issued(struct io_kiocb *req, unsigned int issue_flags)
 {
-	PRINTK("io_iopoll_req_issued: use tail\n");
 	struct io_ring_ctx *ctx = req->ctx;
 	const bool needs_lock = issue_flags & IO_URING_F_UNLOCKED;
 
@@ -1696,7 +1685,6 @@ static u32 io_get_sequence(struct io_kiocb *req)
 static __cold void io_drain_req(struct io_kiocb *req)
 	__must_hold(&ctx->uring_lock)
 {
-	PRINTK("io_drain_req: use tail\n");
 	struct io_ring_ctx *ctx = req->ctx;
 	struct io_defer_entry *de;
 	int ret;
@@ -1816,7 +1804,6 @@ struct io_wq_work *io_wq_free_work(struct io_wq_work *work)
 
 void io_wq_submit_work(struct io_wq_work *work)
 {
-	PRINTK("io_uring.c: io_wq_submit_work\n");
 	struct io_kiocb *req = container_of(work, struct io_kiocb, work);
 	const struct io_issue_def *def = &io_issue_defs[req->opcode];
 	unsigned int issue_flags = IO_URING_F_UNLOCKED | IO_URING_F_IOWQ;
@@ -1962,17 +1949,14 @@ static void io_queue_async(struct io_kiocb *req, int ret)
 
 	switch (io_arm_poll_handler(req, 0)) {
 	case IO_APOLL_READY:
-		PRINTK("io_uring.c: IO_APOLL_READY\n");
 		io_kbuf_recycle(req, 0);
 		io_req_task_queue(req);
 		break;
 	case IO_APOLL_ABORTED:
-		PRINTK("io_uring.c: IO_APOLL_ABORTED\n");
 		io_kbuf_recycle(req, 0);
 		io_queue_iowq(req);
 		break;
 	case IO_APOLL_OK:
-		PRINTK("io_uring.c: IO_APOLL_OK\n");
 		break;
 	}
 
@@ -1983,7 +1967,6 @@ static void io_queue_async(struct io_kiocb *req, int ret)
 static inline void io_queue_sqe(struct io_kiocb *req)
 	__must_hold(&req->ctx->uring_lock)
 {
-	// PRINTK("io_uring.c: io_queue_sqe\n");
 	int ret;
 
 	ret = io_issue_sqe(req,
@@ -2288,49 +2271,6 @@ static void io_commit_sqring(struct io_ring_ctx *ctx)
 	smp_store_release(&rings->sq.head, ctx->cached_sq_head);
 }
 
-static int remap_user_memeory(struct mm_struct *mm, unsigned long start_addr,
-			      unsigned long new_phys_addr, size_t size)
-{
-	struct vm_area_struct *vma;
-	// struct mmu_gather tlb;
-
-	vma = find_vma(mm, start_addr);
-	if (!vma || vma->vm_start > start_addr ||
-	    vma->vm_end < (start_addr + size))
-		return -EINVAL;
-
-	zap_vma_ptes(vma, start_addr, size);
-
-	if (remap_pfn_range(vma, start_addr, new_phys_addr >> PAGE_SHIFT, size,
-			    vma->vm_page_prot))
-		return -EIO;
-
-	return 0;
-}
-
-static bool io_expand_sqring(struct io_ring_ctx *ctx)
-{
-	int;
-	void *ptr;
-
-	if (!(ctx->flags & IORING_SETUP_NO_MMAP)) {
-		//		PRINTK("\tbefore: !IORING_SETUP_NO_MMAP,ptr: %p, ctx->sqe_pages:%p, ctx->n_sqe_pages:%d, size:%d\n", ptr, ctx->sqe_pages, ctx->n_sqe_pages, size);
-		//		ptr = io_pages_map(&ctx->sqe_pages, &ctx->n_sqe_pages, size);
-		//		PRINTK("\tafter: io_pages_map()(sqe), ptr:%p, ctx->sqe_pages:%p, ctx->n_sqe_pages:%d, size:%d\n", ptr, ctx->sqe_pages, ctx->n_sqe_pages, size);
-	} else {
-		//		PRINTK("\tbefore: IORING_SETUP_NO_MMAP Double, so call io_sqes_map(ctx, p->sq_off.user_addr, size)\n");
-		//		ptr = io_sqes_map(ctx, p->sq_off.user_addr, size);
-		//		PRINTK("\tafter: io_sqes_map(), p->sq_off.user_addr:%p\n", p->sq_off.user_addr);
-	}
-
-	//	PRINTK("Submission queue ring successfully expanded to %u entries.\n", size);
-
-	if (!ptr)
-		return NULL;
-
-	return ptr;
-}
-
 /*
  * Fetch an sqe, if one is available. Note this returns a pointer to memory
  * that is mapped by userspace. This means that care needs to be taken to
@@ -2341,15 +2281,17 @@ static bool io_expand_sqring(struct io_ring_ctx *ctx)
  */
 static bool io_get_sqe(struct io_ring_ctx *ctx, const struct io_uring_sqe **sqe)
 {
-	PRINTK("\t====io_get_sqe start====\n");
 	unsigned mask = ctx->sq_entries - 1;
 	unsigned head = ctx->cached_sq_head++ & mask;
 
+	if (head == ctx->sq_entries - 1) {
+		printk("full\n");
+		io_expand_sq_ring(ctx);
+	}
+
 	if (!(ctx->flags & IORING_SETUP_NO_SQARRAY)) {
-		PRINTK("\t\tio_get_sqe: if(!(ctx->flags & IORING_SETUP_NO_SQARRAY))\n");
 		head = READ_ONCE(ctx->sq_array[head]);
 		if (unlikely(head >= ctx->sq_entries)) {
-			PRINTK("\t\tio_get_sqe: if(unlikely(head >= ctx->sq_entries))\n");
 			/* drop invalid entries */
 			spin_lock(&ctx->completion_lock);
 			ctx->cq_extra--;
@@ -2370,15 +2312,9 @@ static bool io_get_sqe(struct io_ring_ctx *ctx, const struct io_uring_sqe **sqe)
 	 */
 
 	/* double index for 128-byte SQEs, twice as long */
-	if (ctx->flags & IORING_SETUP_SQE128) {
-		PRINTK("\t\tif(ctx->flags & IORING_SETUP_SQE128\n");
+	if (ctx->flags & IORING_SETUP_SQE128)
 		head <<= 1;
-	}
-
-	PRINTK("\t\tctx->sq_sqes_arr:%p, ctx->cached_sqe_arr_tail:%d, head:%d\n", ctx->sq_sqes_arr[ctx->cached_sqe_arr_tail][head], ctx->cached_sqe_arr_tail, head);
-	*sqe = &ctx->sq_sqes_arr[ctx->cached_sqe_arr_tail][head];
-
-	PRINTK("\t====io_get_sqe fin====\n");
+	*sqe = &ctx->sq_sqes[head];
 	return true;
 }
 
@@ -2389,17 +2325,10 @@ int io_submit_sqes(struct io_ring_ctx *ctx, unsigned int nr)
 	unsigned int left;
 	int ret;
 
-	PRINTK("io_uring.c: io_submit_sqes: entries = %d\n", entries);
-
-	if (unlikely(!entries)) {
-		PRINTK("io_uring.c: io_submit_sqes: unlikely(!entries), entries = %d\n",
-		       entries);
+	if (unlikely(!entries))
 		return 0;
-	}
-
 	/* make sure SQ entry isn't read before tail */
 	ret = left = min(nr, entries);
-
 	io_get_task_refs(left);
 	io_submit_state_start(&ctx->submit_state, left);
 
@@ -2407,13 +2336,9 @@ int io_submit_sqes(struct io_ring_ctx *ctx, unsigned int nr)
 		const struct io_uring_sqe *sqe;
 		struct io_kiocb *req;
 
-		if (unlikely(!io_alloc_req(ctx, &req))) {
-			PRINTK("fail to alloc req\n");
+		if (unlikely(!io_alloc_req(ctx, &req)))
 			break;
-		}
-
 		if (unlikely(!io_get_sqe(ctx, &sqe))) {
-			PRINTK("fail io_get_sqe func\n");
 			io_req_add_to_cache(req, ctx);
 			break;
 		}
@@ -2438,10 +2363,8 @@ int io_submit_sqes(struct io_ring_ctx *ctx, unsigned int nr)
 	}
 
 	io_submit_state_end(ctx);
-
 	/* Commit SQ ring head once we've consumed and submitted all SQEs */
 	io_commit_sqring(ctx);
-
 	return ret;
 }
 
@@ -2524,7 +2447,6 @@ static int io_cqring_wait(struct io_ring_ctx *ctx, int min_events,
 			  const sigset_t __user *sig, size_t sigsz,
 			  struct __kernel_timespec __user *uts)
 {
-	//	PRINTK("io_cqring_wait: use tail\n");
 	struct io_wait_queue iowq;
 	struct io_rings *rings = ctx->rings;
 	int ret;
@@ -2648,9 +2570,8 @@ static void *io_rings_map(struct io_ring_ctx *ctx, unsigned long uaddr,
 static void *io_sqes_map(struct io_ring_ctx *ctx, unsigned long uaddr,
 			 size_t size)
 {
-	PRINTK("io_uring.c: io_sqes_map()\n");
-	return __io_uaddr_map(&ctx->sqe_pages[ctx->cached_sqe_arr_tail],
-			      &ctx->n_sqe_pages, uaddr, size);
+	return __io_uaddr_map(&ctx->sqe_pages[0], &ctx->n_sqe_pages, uaddr,
+			      size);
 }
 
 static void io_rings_free(struct io_ring_ctx *ctx)
@@ -2658,21 +2579,19 @@ static void io_rings_free(struct io_ring_ctx *ctx)
 	if (!(ctx->flags & IORING_SETUP_NO_MMAP)) {
 		io_pages_unmap(ctx->rings, &ctx->ring_pages, &ctx->n_ring_pages,
 			       true);
-		io_pages_unmap(ctx->sq_sqes_arr[ctx->cached_sqe_arr_tail],
-			       &ctx->sqe_pages[ctx->cached_sqe_arr_tail],
+		io_pages_unmap(ctx->sq_sqes, &ctx->sqe_pages[0],
 			       &ctx->n_sqe_pages, true);
 	} else {
 		io_pages_free(&ctx->ring_pages, ctx->n_ring_pages);
 		ctx->n_ring_pages = 0;
-		io_pages_free(&ctx->sqe_pages[ctx->cached_sqe_arr_tail],
-			      ctx->n_sqe_pages);
+		io_pages_free(&ctx->sqe_pages[0], ctx->n_sqe_pages);
 		ctx->n_sqe_pages = 0;
 		vunmap(ctx->rings);
-		vunmap(ctx->sq_sqes_arr[ctx->cached_sqe_arr_tail]);
+		vunmap(ctx->sq_sqes);
 	}
 
 	ctx->rings = NULL;
-	ctx->sq_sqes_arr[ctx->cached_sqe_arr_tail] = NULL;
+	ctx->sq_sqes = NULL;
 }
 
 static unsigned long rings_size(struct io_ring_ctx *ctx,
@@ -2683,9 +2602,6 @@ static unsigned long rings_size(struct io_ring_ctx *ctx,
 	size_t off, sq_array_size;
 
 	off = struct_size(rings, cqes, cq_entries);
-
-	PRINTK("io_uring.c:rings_size():off=%zu\n", off);
-
 	if (off == SIZE_MAX)
 		return SIZE_MAX;
 	if (ctx->flags & IORING_SETUP_CQE32) {
@@ -2694,9 +2610,7 @@ static unsigned long rings_size(struct io_ring_ctx *ctx,
 	}
 
 #ifdef CONFIG_SMP
-	PRINTK("io_uring.c: rings_size(): CONFIG_SMP\n");
 	off = ALIGN(off, SMP_CACHE_BYTES);
-	PRINTK("io_uring.c:rings_size():off=%zu\n", off);
 	if (off == 0)
 		return SIZE_MAX;
 #endif
@@ -2714,8 +2628,6 @@ static unsigned long rings_size(struct io_ring_ctx *ctx,
 
 	if (check_add_overflow(off, sq_array_size, &off))
 		return SIZE_MAX;
-
-	PRINTK("io_uring.c:rings_size():off=%zu\n", off);
 
 	return off;
 }
@@ -3446,56 +3358,152 @@ bool io_is_uring_fops(struct file *file)
 {
 	return file->f_op == &io_uring_fops;
 }
+/*
+void find_vma_for_pa_in_mm(struct mm_struct *mm, unsigned long target_pa)
+{
+	struct vm_area_struct *vma;
+	unsigned long va;
+	pte_t *pte;
+	struct page *page;
+
+	if (!mm)
+		return;
+
+	down_read(&mm->mmap_lock);
+	for (vma = mm->mmap; vma; vma = vma->vm_next) {
+		for (va = vma->vm_start; va < vma->vm_end; va += PAGE_SIZE) {
+			pte = get_locked_pte(mm, va, NULL);
+			if (!pte)
+				continue;
+
+			page = pte_page(*pte);
+			if (!page)
+				continue;
+
+			if (page_to_phys(page) == target_pa) {
+				printk(KERN_INFO
+				       "Found VA: %lx for PA: %lx in process (mm: %p)\n",
+				       va, target_pa, mm);
+			}
+		}
+	}
+	up_read(&mm->mmap_lock);
+} */
+
+int io_expand_sq_ring(struct io_ring_ctx *ctx)
+{
+	size_t size;
+	void *ptr;
+
+	if (ctx->sq_arr_entries == 0) {
+		if (!(ctx->flags & IORING_SETUP_NO_MMAP)) {
+			printk("sq_ring_entries:%d\n",
+			       ctx->rings->sq_ring_entries);
+			size = array_size(sizeof(struct io_uring_sqe),
+						 ctx->sq_entries);
+
+			ptr = io_pages_map(&ctx->sqe_pages[1],
+					   &ctx->n_sqe_pages, size);
+		}
+
+		if (IS_ERR(ptr)) {
+			io_rings_free(ctx);
+			return PTR_ERR(ptr);
+		}
+
+		ctx->sq_sqes_arr[++ctx->sq_arr_entries] = ptr;
+
+		int ret;
+		struct vm_area_struct *vma = ctx->sqe_vma;
+		phys_addr_t new_phys_addr;
+
+		if (vma) {
+			printk(KERN_INFO
+			       "sq_sqes, VMA found: start=%lx, end=%lx\n",
+			       vma->vm_start, vma->vm_end);
+		} else {
+			printk(KERN_INFO "VMA not found\n");
+		}
+	
+		printk("before vma->vm_mm lock\n");
+		mmap_write_lock(vma->vm_mm);
+
+		zap_page_range_single(vma, vma->vm_start, vma->vm_end - vma->vm_start, NULL);
+		flush_tlb_mm_range(vma->vm_mm, vma->vm_start, vma->vm_start + size, PAGE_SHIFT, false);
+
+		if (vma->vm_flags & VM_LOCKED) {
+		    pr_warn("zap_vma_ptes: 페이지가 해제되지 않음\n");
+		} else {
+		    pr_info("zap_vma_ptes: 성공적으로 페이지가 해제됨\n");
+		}
+
+		printk("zap\n");
+
+		if (!(vma->vm_flags & VM_SHARED)) {
+		    printk("vm_insert_page failed: VMA is not shared\n");
+		}
+
+		if (vma->vm_flags & (VM_IO | VM_PFNMAP)) {
+		    printk("vm_insert_page not allowed for VM_IO or VM_PFNMAP\n");
+		}
+
+		printk("before vm_insert_page\n");
+		
+		if (!vma) {
+			printk("vma null\n");
+		}
+
+		if (!ptr) {
+			printk("ptr null\n");
+		}
+
+		ret = io_uring_mmap_pages(ctx, vma, ctx->sqe_pages[1], ctx->n_sqe_pages);
+		printk("after vm_insert_page ret:%d\n", ret);
+		mmap_write_unlock(vma->vm_mm);
+		if (ret) {
+			printk(KERN_ERR "vm_insert_page failed: %d\n", ret);
+			return ret;  // ✅ PTR_ERR 사용 금지
+		}
+	}
+
+	return ptr;
+}
+
+/*static int remap_user_memory()
+{
+	struct mm_struct *mm = ctx->mm_acount;
+	pte_t *pte;
+	unsigned long old_pa, new_pa;
+}*/
 
 static __cold int io_allocate_scq_urings(struct io_ring_ctx *ctx,
 					 struct io_uring_params *p)
 {
-	PRINTK("==== start io_allocate_scq_urings ====\n");
 	struct io_rings *rings;
-	size_t size, sq_array_offset, size_3d;
+	size_t size, sq_array_offset;
 	void *ptr;
 
 	/* make sure these are sane, as we already accounted them */
 	ctx->sq_entries = p->sq_entries;
 	ctx->cq_entries = p->cq_entries;
-	// ctx->sq_list_entries = p->sq_list_entries;
 
 	size = rings_size(ctx, p->sq_entries, p->cq_entries, &sq_array_offset);
 	if (size == SIZE_MAX)
 		return -EOVERFLOW;
 
-	PRINTK("\t==== create cqe part ====\n");
-	if (!(ctx->flags & IORING_SETUP_NO_MMAP)) {
-		/*
-		 * I think this phrase refers to cq_ring
-		 * io_pages_map set the ctx->ring_pages, and ctx->n_ring_pages).
-		 * Where are they used afterward?
-		 * */
-		PRINTK("\tbefore: !IORING_SETUP_NO_MMAP, rings:%p, ctx->ring_pages:%p, ctx->n_ring_pages:%d, size:%d\n",
-		       rings, ctx->ring_pages, ctx->n_ring_pages, size);
+	if (!(ctx->flags & IORING_SETUP_NO_MMAP))
 		rings = io_pages_map(&ctx->ring_pages, &ctx->n_ring_pages,
-					size);
-
-		PRINTK("\tafter: io_pages_map()(ring), rings:%p, ctx->ring_pages:%p, ctx->n_ring_pages:%d, size:%d\n",
-		       rings, ctx->ring_pages, ctx->n_ring_pages, size);
-	} else {
-		PRINTK("\tbefore: IORING_SETUP_NO_MMAP, so call io_rings_map(ctx, p->cq_off.user_addr, size)\n");
+				     size);
+	else
 		rings = io_rings_map(ctx, p->cq_off.user_addr, size);
-		PRINTK("\tafter: IORING_SETUP_NO_MMAP, io_rings_map\n",
-		       ctx->ring_pages);
-	}
-	PRINTK("\t==== finish cqe part ====\n");
 
 	if (IS_ERR(rings))
 		return PTR_ERR(rings);
 
-	/*
-	 * ctx->rings refers to cq_ring?
-	 * */
 	ctx->rings = rings;
 	if (!(ctx->flags & IORING_SETUP_NO_SQARRAY))
 		ctx->sq_array = (u32 *)((char *)rings + sq_array_offset);
-	rings->sq_ring_mask = p->sq_entries - 2;
+	rings->sq_ring_mask = p->sq_entries - 1;
 	rings->cq_ring_mask = p->cq_entries - 1;
 	rings->sq_ring_entries = p->sq_entries;
 	rings->cq_ring_entries = p->cq_entries;
@@ -3503,72 +3511,39 @@ static __cold int io_allocate_scq_urings(struct io_ring_ctx *ctx,
 	if (p->flags & IORING_SETUP_SQE128)
 		size = array_size(2 * sizeof(struct io_uring_sqe),
 				  p->sq_entries);
-	else {
+	else
 		size = array_size(sizeof(struct io_uring_sqe), p->sq_entries);
-		size_3d = array_size(sizeof(struct io_uring_sqe *), 10);
-	}
 	if (size == SIZE_MAX) {
 		io_rings_free(ctx);
 		return -EOVERFLOW;
 	}
 
-	PRINTK("\t==== start sqe part ====\n");
+	io_uring_allocate_buffer(ctx, 10);
 
-	ptr = io_pages_map_3d(&ctx->sqe_pages, &ctx->n_sqe_arr_pages, size_3d);
-	
-	PRINTK("\t\tio_pages_map_3d: ptr&ctx->sq_sqes_arr:%p\n", ptr);
-
-	if (IS_ERR(ptr)) {
+	if (IS_ERR(ctx->sqe_pages) || IS_ERR(ctx->sq_sqes_arr)) {
 		io_rings_free(ctx);
 		return PTR_ERR(ptr);
 	}
 
-	ctx->sq_sqes_arr = ptr;
-
-	if (!(ctx->flags & IORING_SETUP_NO_MMAP)) {
-		/*
-		 * I think this phrase refers to sq_ring.
-		 */
+	if (!(ctx->flags & IORING_SETUP_NO_MMAP))
 		ptr = io_pages_map(&ctx->sqe_pages[0], &ctx->n_sqe_pages, size);
-		PRINTK("\t\tio_pages_map: ptr:%p, ctx->sqe_pages[0]:%p, ctx->n_sqe_pages:%d, size:%d\n", ptr, ctx->sqe_pages[0], ctx->n_sqe_pages, size);
-	} else {
-		PRINTK("\tbefore: IORING_SETUP_NO_MMAP Double, so call io_sqes_map(ctx, p->sq_off.user_addr, size)\n");
+	else
 		ptr = io_sqes_map(ctx, p->sq_off.user_addr, size);
-		PRINTK("\tafter: io_sqes_map(), p->sq_off.user_addr:%p\n",
-		       p->sq_off.user_addr);
-	}
-
-	PRINTK("\t==== finish sqe part ====\n");
 
 	if (IS_ERR(ptr)) {
 		io_rings_free(ctx);
 		return PTR_ERR(ptr);
 	}
 
-	PRINTK("\t\tbefore: ptr:%p, sq_sqes_arr:%p. sq_sqes_arr[0]:%p. sq_sqes_arr[0][0]:%p. This pointer is created by io_pages_map\n", ptr, ctx->sq_sqes_arr, ctx->sq_sqes_arr[0], ctx->sq_sqes_arr[0][0]);
+	ctx->sq_sqes = ptr;
+	printk("sq_sqes:%p\n", ptr);
 	ctx->sq_sqes_arr[0] = ptr;
-	
-	// if (ctx->flags & IORING_SETUP_SQ_ADAPTIVE) {
-	PRINTK("\t==== start sqe list allocation ====\n");
-	// size_t sqe_list_size = array_size(sizeof(struct io_uring_sqe*), ctx->sq_list_entries);
 
-	// io_expand_sqring(ctx);
-	// size_t sqe_list_size = array_size(sizeof(struct io_uring_sqe *), 10);
-	// PRINTK("sqe_list_size:%zu\n", sqe_list_size);
-	// ctx->sq_sqes_list = io_pages_map_2d(&ctx->sqe_list_pages, &ctx->n_sqe_list_pages, sqe_list_size);
-	// ctx->sq_sqes_list = ptr;
-	PRINTK("\t==== finish sqe list allocation ====\n");
-	// }
-
-	PRINTK("\t\tafter: ptr:%p, sq_sqes_arr:%p. sq_sqes_arr[0]:%p. sq_sqes_arr[0][0]:%p. This pointer is created by io_pages_map\n", ptr, ctx->sq_sqes_arr, ctx->sq_sqes_arr[0], ctx->sq_sqes_arr[0][0]);
-	// ctx->sq_sqes = ptr;
-	PRINTK("==== finish io_allocate_scq_urings ====\n");
 	return 0;
 }
 
 static int io_uring_install_fd(struct file *file)
 {
-	PRINTK("io_uring_install_fd()\n");
 	int fd;
 
 	fd = get_unused_fd_flags(O_RDWR | O_CLOEXEC);
@@ -3593,7 +3568,6 @@ static struct file *io_uring_get_file(struct io_ring_ctx *ctx)
 static __cold int io_uring_create(unsigned entries, struct io_uring_params *p,
 				  struct io_uring_params __user *params)
 {
-	PRINTK("==== start io_uring_create() ====\n");
 	struct io_ring_ctx *ctx;
 	struct io_uring_task *tctx;
 	struct file *file;
@@ -3737,12 +3711,6 @@ static __cold int io_uring_create(unsigned entries, struct io_uring_params *p,
 	if (!(ctx->flags & IORING_SETUP_NO_MMAP))
 		p->sq_off.user_addr = 0;
 
-	PRINTK("\t=====ring params=====\n");
-	PRINTK("\tp->sq_off.head:%u\n", p->sq_off.head);
-	PRINTK("\tp->sq_off.ring_mask:%u\n", p->sq_off.ring_mask);
-	PRINTK("\tp->sq_off.ring_entries:%u\n", p->sq_off.ring_entries);
-	PRINTK("\t=====================\n");
-
 	p->cq_off.head = offsetof(struct io_rings, cq.head);
 	p->cq_off.tail = offsetof(struct io_rings, cq.tail);
 	p->cq_off.ring_mask = offsetof(struct io_rings, cq_ring_mask);
@@ -3779,9 +3747,6 @@ static __cold int io_uring_create(unsigned entries, struct io_uring_params *p,
 	}
 
 	ret = __io_uring_add_tctx_node(ctx);
-
-	PRINTK("__io_uring_add_tctx_node return, ret = %d\n", ret);
-
 	if (ret)
 		goto err_fput;
 	tctx = current->io_uring;
@@ -3799,9 +3764,6 @@ static __cold int io_uring_create(unsigned entries, struct io_uring_params *p,
 		goto err_fput;
 
 	trace_io_uring_create(ret, ctx, p->sq_entries, p->cq_entries, p->flags);
-
-	PRINTK("==== finish io_uring_create(): return %d ====\n", ret);
-
 	return ret;
 err:
 	io_ring_ctx_wait_and_kill(ctx);
@@ -3818,7 +3780,6 @@ err_fput:
  */
 static long io_uring_setup(u32 entries, struct io_uring_params __user *params)
 {
-	PRINTK("=================NOW START io_uring_setup=================\n");
 	struct io_uring_params p;
 	int i;
 
@@ -3837,8 +3798,7 @@ static long io_uring_setup(u32 entries, struct io_uring_params __user *params)
 	      IORING_SETUP_TASKRUN_FLAG | IORING_SETUP_SQE128 |
 	      IORING_SETUP_CQE32 | IORING_SETUP_SINGLE_ISSUER |
 	      IORING_SETUP_DEFER_TASKRUN | IORING_SETUP_NO_MMAP |
-	      IORING_SETUP_REGISTERED_FD_ONLY | IORING_SETUP_NO_SQARRAY |
-	      IORING_SETUP_SQ_ADAPTIVE))
+	      IORING_SETUP_REGISTERED_FD_ONLY | IORING_SETUP_NO_SQARRAY))
 		return -EINVAL;
 
 	return io_uring_create(entries, &p, params);
