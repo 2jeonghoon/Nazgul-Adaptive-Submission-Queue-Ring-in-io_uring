@@ -209,7 +209,11 @@ struct io_ring_ctx {
 		struct io_alloc_cache rw_cache;
 		struct io_alloc_cache uring_cache;
 		struct hlist_head cancelable_uring_cmd;
+		struct io_uring **sq_arr;
 		unsigned sq_arr_entries;
+		unsigned nr_sq_arr_entries; 
+		unsigned cached_sq_sqes;
+		bool remap_flag;
 		struct vm_area_struct *sqe_vma;
 	} ____cacheline_aligned_in_smp;
 	struct {

@@ -221,6 +221,7 @@ bool io_match_task_safe(struct io_kiocb *head, struct task_struct *task,
 	} else {
 		matched = io_match_linked(head);
 	}
+
 	return matched;
 }
 
@@ -2268,6 +2269,15 @@ static void io_commit_sqring(struct io_ring_ctx *ctx)
 	 * since once we write the new head, the application could
 	 * write new data to them.
 	 */
+	
+	if(unlikely(ctx->remap_flag)) {
+		ctx->cached_sq_sqes = ++ctx->cached_sq_sqes % (ctx->nr_sq_arr_entries+1);
+		printk("ctx->remap_flag, so cached_sq_sqes update :%d, sq_arr_entries:%d\n", ctx->cached_sq_sqes, ctx->sq_arr_entries);
+		ctx->remap_flag = false;
+
+		return;
+	}
+
 	smp_store_release(&rings->sq.head, ctx->cached_sq_head);
 }
 
@@ -2283,11 +2293,7 @@ static bool io_get_sqe(struct io_ring_ctx *ctx, const struct io_uring_sqe **sqe)
 {
 	unsigned mask = ctx->sq_entries - 1;
 	unsigned head = ctx->cached_sq_head++ & mask;
-
-	if (head == ctx->sq_entries - 1) {
-		printk("full\n");
-		io_expand_sq_ring(ctx);
-	}
+	unsigned cached_sq_sqes = ctx->cached_sq_sqes;
 
 	if (!(ctx->flags & IORING_SETUP_NO_SQARRAY)) {
 		head = READ_ONCE(ctx->sq_array[head]);
@@ -2314,7 +2320,7 @@ static bool io_get_sqe(struct io_ring_ctx *ctx, const struct io_uring_sqe **sqe)
 	/* double index for 128-byte SQEs, twice as long */
 	if (ctx->flags & IORING_SETUP_SQE128)
 		head <<= 1;
-	*sqe = &ctx->sq_sqes[head];
+	*sqe = &ctx->sq_sqes_arr[cached_sq_sqes][head];
 	return true;
 }
 
@@ -2324,13 +2330,32 @@ int io_submit_sqes(struct io_ring_ctx *ctx, unsigned int nr)
 	unsigned int entries = io_sqring_entries(ctx);
 	unsigned int left;
 	int ret;
+	ktime_t start, end;	
 
 	if (unlikely(!entries))
 		return 0;
 	/* make sure SQ entry isn't read before tail */
 	ret = left = min(nr, entries);
+
+	if (unlikely(left == ctx->sq_entries)) {
+		/*
+		 * this is sq ring saturate point.
+		 */
+
+		if(likely(ctx->nr_sq_arr_entries < ctx->sq_arr_entries))
+			io_expand_sq_ring(ctx);
+
+		smp_store_release(&ctx->rings->sq.head, ctx->rings->sq.tail);
+		ctx->remap_flag = true;
+	}
+
 	io_get_task_refs(left);
 	io_submit_state_start(&ctx->submit_state, left);
+
+
+	if (unlikely(ctx->remap_flag)) {
+		start = ktime_get(); 
+	}
 
 	do {
 		const struct io_uring_sqe *sqe;
@@ -2362,9 +2387,18 @@ int io_submit_sqes(struct io_ring_ctx *ctx, unsigned int nr)
 		current->io_uring->cached_refs += left;
 	}
 
+	if (unlikely(ctx->remap_flag)) {
+		s64 delta_ns;
+		end = ktime_get();
+
+		delta_ns = ktime_to_ns(ktime_sub(end, start));
+		pr_info("io_get and submit sqes Execution time: %lld ns\n", delta_ns);
+	}
+
 	io_submit_state_end(ctx);
 	/* Commit SQ ring head once we've consumed and submitted all SQEs */
 	io_commit_sqring(ctx);
+
 	return ret;
 }
 
@@ -3358,114 +3392,58 @@ bool io_is_uring_fops(struct file *file)
 {
 	return file->f_op == &io_uring_fops;
 }
-/*
-void find_vma_for_pa_in_mm(struct mm_struct *mm, unsigned long target_pa)
-{
-	struct vm_area_struct *vma;
-	unsigned long va;
-	pte_t *pte;
-	struct page *page;
-
-	if (!mm)
-		return;
-
-	down_read(&mm->mmap_lock);
-	for (vma = mm->mmap; vma; vma = vma->vm_next) {
-		for (va = vma->vm_start; va < vma->vm_end; va += PAGE_SIZE) {
-			pte = get_locked_pte(mm, va, NULL);
-			if (!pte)
-				continue;
-
-			page = pte_page(*pte);
-			if (!page)
-				continue;
-
-			if (page_to_phys(page) == target_pa) {
-				printk(KERN_INFO
-				       "Found VA: %lx for PA: %lx in process (mm: %p)\n",
-				       va, target_pa, mm);
-			}
-		}
-	}
-	up_read(&mm->mmap_lock);
-} */
 
 int io_expand_sq_ring(struct io_ring_ctx *ctx)
 {
 	size_t size;
 	void *ptr;
 
-	if (ctx->sq_arr_entries == 0) {
-		if (!(ctx->flags & IORING_SETUP_NO_MMAP)) {
-			printk("sq_ring_entries:%d\n",
-			       ctx->rings->sq_ring_entries);
-			size = array_size(sizeof(struct io_uring_sqe),
-						 ctx->sq_entries);
+	ktime_t start, end;	
+	s64 delta_ns;
 
-			ptr = io_pages_map(&ctx->sqe_pages[1],
-					   &ctx->n_sqe_pages, size);
-		}
+	printk("sq->rings->sq.head:%d, tail:%d\n", ctx->rings->sq.head, ctx->rings->sq.tail);
 
-		if (IS_ERR(ptr)) {
-			io_rings_free(ctx);
-			return PTR_ERR(ptr);
-		}
+	start = ktime_get();
+	unsigned nr_sq_arr_entries = ++ctx->nr_sq_arr_entries;
 
-		ctx->sq_sqes_arr[++ctx->sq_arr_entries] = ptr;
+	if (!(ctx->flags & IORING_SETUP_NO_MMAP)) {
+		size = array_size(sizeof(struct io_uring_sqe), ctx->sq_entries);
 
-		int ret;
-		struct vm_area_struct *vma = ctx->sqe_vma;
-		phys_addr_t new_phys_addr;
-
-		if (vma) {
-			printk(KERN_INFO
-			       "sq_sqes, VMA found: start=%lx, end=%lx\n",
-			       vma->vm_start, vma->vm_end);
-		} else {
-			printk(KERN_INFO "VMA not found\n");
-		}
-	
-		printk("before vma->vm_mm lock\n");
-		mmap_write_lock(vma->vm_mm);
-
-		zap_page_range_single(vma, vma->vm_start, vma->vm_end - vma->vm_start, NULL);
-		flush_tlb_mm_range(vma->vm_mm, vma->vm_start, vma->vm_start + size, PAGE_SHIFT, false);
-
-		if (vma->vm_flags & VM_LOCKED) {
-		    pr_warn("zap_vma_ptes: 페이지가 해제되지 않음\n");
-		} else {
-		    pr_info("zap_vma_ptes: 성공적으로 페이지가 해제됨\n");
-		}
-
-		printk("zap\n");
-
-		if (!(vma->vm_flags & VM_SHARED)) {
-		    printk("vm_insert_page failed: VMA is not shared\n");
-		}
-
-		if (vma->vm_flags & (VM_IO | VM_PFNMAP)) {
-		    printk("vm_insert_page not allowed for VM_IO or VM_PFNMAP\n");
-		}
-
-		printk("before vm_insert_page\n");
-		
-		if (!vma) {
-			printk("vma null\n");
-		}
-
-		if (!ptr) {
-			printk("ptr null\n");
-		}
-
-		ret = io_uring_mmap_pages(ctx, vma, ctx->sqe_pages[1], ctx->n_sqe_pages);
-		printk("after vm_insert_page ret:%d\n", ret);
-		mmap_write_unlock(vma->vm_mm);
-		if (ret) {
-			printk(KERN_ERR "vm_insert_page failed: %d\n", ret);
-			return ret;  // ✅ PTR_ERR 사용 금지
-		}
+		ptr = io_pages_map(&ctx->sqe_pages[nr_sq_arr_entries], &ctx->n_sqe_pages, size);	
 	}
 
+	if (IS_ERR(ptr)) {
+		io_rings_free(ctx);
+		return PTR_ERR(ptr);
+	}
+
+	ctx->sq_sqes_arr[nr_sq_arr_entries] = ptr;
+
+	end = ktime_get();
+	delta_ns = ktime_to_ns(ktime_sub(end, start));
+    pr_info("Mapping Execution time: %lld ns\n", delta_ns);
+
+	int ret;
+	struct vm_area_struct *vma = ctx->sqe_vma;
+
+	mmap_write_lock(vma->vm_mm);
+
+	start = ktime_get();
+	zap_page_range_single(vma, vma->vm_start, vma->vm_end - vma->vm_start, NULL);
+	flush_tlb_mm_range(vma->vm_mm, vma->vm_start, vma->vm_start + size, PAGE_SHIFT, false);
+
+	ret = io_uring_mmap_pages(ctx, vma, ctx->sqe_pages[nr_sq_arr_entries], ctx->n_sqe_pages);
+	end = ktime_get();
+	mmap_write_unlock(vma->vm_mm);
+
+	delta_ns = ktime_to_ns(ktime_sub(end, start));
+    pr_info("Remapping Execution time: %lld ns\n", delta_ns);
+
+	if (ret) {
+		printk(KERN_ERR "vm_insert_page failed: %d\n", ret);
+		return ret;
+	}
+		
 	return ptr;
 }
 
@@ -3764,6 +3742,11 @@ static __cold int io_uring_create(unsigned entries, struct io_uring_params *p,
 		goto err_fput;
 
 	trace_io_uring_create(ret, ctx, p->sq_entries, p->cq_entries, p->flags);
+
+	printk("sq->rings->sq.head:%d, tail:%d\n", ctx->rings->sq.head, ctx->rings->sq.tail);
+
+	ctx->sq_arr_entries = 10;
+
 	return ret;
 err:
 	io_ring_ctx_wait_and_kill(ctx);

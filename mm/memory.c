@@ -1902,7 +1902,6 @@ void unmap_vmas(struct mmu_gather *tlb, struct ma_state *mas,
 void zap_page_range_single(struct vm_area_struct *vma, unsigned long address,
 		unsigned long size, struct zap_details *details)
 {
-	printk("zap_page_range_single\n");
 	const unsigned long end = address + size;
 	struct mmu_notifier_range range;
 	struct mmu_gather tlb;
@@ -1938,20 +1937,10 @@ void zap_page_range_single(struct vm_area_struct *vma, unsigned long address,
 void zap_vma_ptes(struct vm_area_struct *vma, unsigned long address,
 		unsigned long size)
 {
-	if (!range_in_vma(vma, address, address + size)) {
-		printk("!range_in_vma\n");	
-	}
-
-	if (!vma->vm_flags & VM_PFNMAP) {
-		printk("!vm_flags & VM_PFNMAP)\n");
-	}
-
-
 	if (!range_in_vma(vma, address, address + size) ||
 	    		!(vma->vm_flags & VM_PFNMAP))
 		return;
 
-	printk("zap_vma_ptes\n");
 	zap_page_range_single(vma, address, size, NULL);
 }
 EXPORT_SYMBOL_GPL(zap_vma_ptes);
