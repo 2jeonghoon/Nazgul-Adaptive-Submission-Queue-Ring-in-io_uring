@@ -70,8 +70,6 @@ void io_sq_thread_stop(struct io_sq_data *sqd)
 
 void io_put_sq_data(struct io_sq_data *sqd)
 {
-	PRINTK("io_put_sq_data: \n");
-
 	if (refcount_dec_and_test(&sqd->refs)) {
 		WARN_ON_ONCE(atomic_read(&sqd->park_pending));
 
@@ -286,7 +284,6 @@ static void io_sq_update_worktime(struct io_sq_data *sqd, struct rusage *start)
 
 static int io_sq_thread(void *data)
 {
-	PRINTK("==== io_sq_thread: start ====\n");
 	struct llist_node *retry_list = NULL;
 	struct io_sq_data *sqd = data;
 	struct io_ring_ctx *ctx;
@@ -320,7 +317,6 @@ static int io_sq_thread(void *data)
 	audit_uring_entry(IORING_OP_NOP);
 	audit_uring_exit(true, 0);
 
-	PRINTK("\tio_sq_thread: while start\n");
 	mutex_lock(&sqd->lock);
 	while (1) {
 		bool cap_entries, sqt_spin = false;
@@ -395,7 +391,6 @@ static int io_sq_thread(void *data)
 		finish_wait(&sqd->wait, &wait);
 		timeout = jiffies + sqd->sq_thread_idle;
 	}
-	PRINTK("\tio_sq_thread: while end\n");
 
 	if (retry_list)
 		io_sq_tw(&retry_list, UINT_MAX);

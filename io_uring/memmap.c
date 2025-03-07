@@ -238,13 +238,18 @@ int io_uring_mmap_pages(struct io_ring_ctx *ctx, struct vm_area_struct *vma,
 	return vm_insert_pages(vma, vma->vm_start, pages, &nr_pages);
 }
 
-void io_uring_allocate_buffer(struct io_ring_ctx *ctx, int n)
+void io_uring_allocate_buffer(struct io_ring_ctx *ctx, int nr)
 {
 	gfp_t gfp = GFP_KERNEL_ACCOUNT | __GFP_ZERO | __GFP_NOWARN;
 
-	ctx->sqe_pages = kvmalloc_array(n, sizeof(struct pages **), gfp);
+	ctx->sqe_pages = kvmalloc_array(nr, sizeof(struct pages **), gfp);
 	ctx->sq_sqes_arr =
-		kvmalloc_array(n, sizeof(struct io_uring_sqe *), gfp);
+		kvmalloc_array(nr, sizeof(struct io_uring_sqe *), gfp);
+	ctx->sq_arr = kvmalloc_array(nr, sizeof(struct io_uring*), gfp);
+
+	for (int i = 0; i < nr; i++) {
+		ctx->sq_arr[i] = kvzalloc(sizeof(struct io_uring), gfp);	
+	}
 }
 
 #ifdef CONFIG_MMU

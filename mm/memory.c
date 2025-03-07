@@ -2052,7 +2052,6 @@ static int insert_page_in_batch_locked(struct vm_area_struct *vma, pte_t *pte,
 static int insert_pages(struct vm_area_struct *vma, unsigned long addr,
 			struct page **pages, unsigned long *num, pgprot_t prot)
 {
-	printk("====insert_pages start====\n");
 	pmd_t *pmd = NULL;
 	pte_t *start_pte, *pte;
 	spinlock_t *pte_lock;
@@ -2064,7 +2063,6 @@ static int insert_pages(struct vm_area_struct *vma, unsigned long addr,
 more:
 	ret = -EFAULT;
 	pmd = walk_to_pmd(mm, addr);
-	printk("after walk_to_pmd\n");
 	if (!pmd)
 		goto out;
 
@@ -2076,7 +2074,6 @@ more:
 	if (pte_alloc(mm, pmd))
 		goto out;
 
-	printk("before while (pages_to_write_in_pnd)\n");
 	while (pages_to_write_in_pmd) {
 		int pte_idx = 0;
 		const int batch_size = min_t(int, pages_to_write_in_pmd, 8);
@@ -2128,18 +2125,15 @@ out:
 int vm_insert_pages(struct vm_area_struct *vma, unsigned long addr,
 			struct page **pages, unsigned long *num)
 {
-	printk("====vm_insert_pages start====\n");
 	const unsigned long end_addr = addr + (*num * PAGE_SIZE) - 1;
 
 	if (addr < vma->vm_start || end_addr >= vma->vm_end)
 		return -EFAULT;
-	printk("after addr validation\n");
 	if (!(vma->vm_flags & VM_MIXEDMAP)) {
 		BUG_ON(mmap_read_trylock(vma->vm_mm));
 		BUG_ON(vma->vm_flags & VM_PFNMAP);
 		vm_flags_set(vma, VM_MIXEDMAP);
 	}
-	printk("after flag check\n");
 	/* Defer page refcount checking till we're about to map that page. */
 	return insert_pages(vma, addr, pages, num, vma->vm_page_prot);
 }
@@ -2603,8 +2597,6 @@ int remap_pfn_range_notrack(struct vm_area_struct *vma, unsigned long addr,
 	struct mm_struct *mm = vma->vm_mm;
 	int err;
 
-	printk("remap_pfn_range_notrack\n");
-
 	if (WARN_ON_ONCE(!PAGE_ALIGNED(addr)))
 		return -EINVAL;
 
@@ -2632,20 +2624,13 @@ int remap_pfn_range_notrack(struct vm_area_struct *vma, unsigned long addr,
 		vma->vm_pgoff = pfn;
 	}
 
-	printk("after is_cow_mapping\n");
-
 	vm_flags_set(vma, VM_IO | VM_PFNMAP | VM_DONTEXPAND | VM_DONTDUMP);
 
-	printk("after vm_flags_set\n");
-
 	BUG_ON(addr >= end);
-
-	printk("after BUG_ON(addr >= end);\n");
 
 	pfn -= addr >> PAGE_SHIFT;
 	pgd = pgd_offset(mm, addr);
 	flush_cache_range(vma, addr, end);
-	printk("after flush_cache_range\n");
 	do {
 		next = pgd_addr_end(addr, end);
 		err = remap_p4d_range(mm, pgd, addr, next,

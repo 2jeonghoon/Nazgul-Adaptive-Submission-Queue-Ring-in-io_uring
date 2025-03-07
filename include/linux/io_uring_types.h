@@ -212,7 +212,8 @@ struct io_ring_ctx {
 		struct io_uring **sq_arr;
 		unsigned sq_arr_entries;
 		unsigned nr_sq_arr_entries; 
-		unsigned cached_sq_sqes;
+		unsigned cached_sq_sqes_head;
+		unsigned cached_sq_sqes_tail;
 		bool remap_flag;
 		struct vm_area_struct *sqe_vma;
 	} ____cacheline_aligned_in_smp;
