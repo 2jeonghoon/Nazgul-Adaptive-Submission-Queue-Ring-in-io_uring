@@ -552,7 +552,6 @@ static void io_worker_handle_work(struct io_wq_acct *acct,
 				  struct io_worker *worker)
 	__releases(&acct->lock)
 {
-	PRINTK("io-wq.c: io_worker_handle_work\n");
 	struct io_wq *wq = worker->wq;
 	bool do_kill = test_bit(IO_WQ_BIT_EXIT, &wq->state);
 
@@ -632,7 +631,6 @@ static void io_worker_handle_work(struct io_wq_acct *acct,
 
 static int io_wq_worker(void *data)
 {
-	// PRINTK("io-wq.c: io_wq_worker\n");
 	struct io_worker *worker = data;
 	struct io_wq_acct *acct = io_wq_get_acct(worker);
 	struct io_wq *wq = worker->wq;
@@ -700,7 +698,6 @@ static int io_wq_worker(void *data)
  */
 void io_wq_worker_running(struct task_struct *tsk)
 {
-	// PRINTK("io-wq.c: io_wq_worker_running\n");
 	struct io_worker *worker = tsk->worker_private;
 
 	if (!worker)
@@ -719,7 +716,6 @@ void io_wq_worker_running(struct task_struct *tsk)
  */
 void io_wq_worker_sleeping(struct task_struct *tsk)
 {
-	// PRINTK("io-wq.c: io_wq_worker_sleeping\n");
 	struct io_worker *worker = tsk->worker_private;
 
 	if (!worker)
@@ -736,7 +732,6 @@ void io_wq_worker_sleeping(struct task_struct *tsk)
 static void io_init_new_worker(struct io_wq *wq, struct io_worker *worker,
 			       struct task_struct *tsk)
 {
-	PRINTK("io-wq.c: io_init_new_worker\n");
 	tsk->worker_private = worker;
 	worker->task = tsk;
 	set_cpus_allowed_ptr(tsk, wq->cpu_mask);
@@ -786,7 +781,6 @@ static void create_worker_cont(struct callback_head *cb)
 	clear_bit_unlock(0, &worker->create_state);
 	wq = worker->wq;
 	tsk = create_io_thread(io_wq_worker, worker, NUMA_NO_NODE);
-	PRINTK("io-wq.c: create_worker_cont: create_io_worker tsk: %p\n", tsk);
 
 	if (!IS_ERR(tsk)) {
 		io_init_new_worker(wq, worker, tsk);
@@ -858,7 +852,6 @@ fail:
 
 	tsk = create_io_thread(io_wq_worker, worker, NUMA_NO_NODE);
 
-	PRINTK("io-wq.c: create_io_worker: create_io_thread tsk: %p\n", tsk);
 
 	if (!IS_ERR(tsk)) {
 		io_init_new_worker(wq, worker, tsk);
@@ -900,7 +893,6 @@ static bool io_wq_for_each_worker(struct io_wq *wq,
 
 static bool io_wq_worker_wake(struct io_worker *worker, void *data)
 {
-	PRINTK("io_wq_worker_wake: \n");
 	__set_notify_signal(worker->task);
 	wake_up_process(worker->task);
 	return false;

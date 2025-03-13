@@ -70,6 +70,7 @@
 #include <linux/io_uring/cmd.h>
 #include <linux/audit.h>
 #include <linux/security.h>
+#include <asm/tlb.h>
 #include <asm/shmparam.h>
 
 #define CREATE_TRACE_POINTS
@@ -2263,18 +2264,19 @@ static void io_submit_state_start(struct io_submit_state *state,
 static void io_commit_sqring(struct io_ring_ctx *ctx)
 {
 	struct io_rings *rings = ctx->rings;
-
+	
 	/*
 	 * Ensure any loads from the SQEs are done at this point,
 	 * since once we write the new head, the application could
 	 * write new data to them.
 	 */
 	
-	if(unlikely(ctx->cached_sq_sqes_head != ctx->cached_sq_sqes_tail)) {
-		printk("ctx->cached_sq_head:%d, .head:%d", ctx->cached_sq_head, ctx->sq_arr[ctx->cached_sq_sqes_head]->head);
-		ctx->sq_arr[ctx->cached_sq_sqes_head]->head = ctx->cached_sq_head;
-		ctx->cached_sq_sqes_head = ++ctx->cached_sq_sqes_head % (ctx->nr_sq_arr_entries);
-		ctx->cached_sq_head = ctx->sq_arr[ctx->cached_sq_sqes_head]->head;
+	if(unlikely(ctx->sq_sqes_list.head != ctx->sq_sqes_list.tail)) {
+		struct io_uring_sqe_node* head = ctx->sq_sqes_list.head;
+		
+		head->sq.head = ctx->cached_sq_head;
+		ctx->sq_sqes = head->next->sqe;
+		ctx->cached_sq_head = head->next->sq.head;
 
 		return;
 	}
@@ -2294,7 +2296,6 @@ static bool io_get_sqe(struct io_ring_ctx *ctx, const struct io_uring_sqe **sqe)
 {
 	unsigned mask = ctx->sq_entries - 1;
 	unsigned head = ctx->cached_sq_head++ & mask;
-	unsigned cached_sq_sqes_head = ctx->cached_sq_sqes_head;
 
 	if (!(ctx->flags & IORING_SETUP_NO_SQARRAY)) {
 		head = READ_ONCE(ctx->sq_array[head]);
@@ -2321,7 +2322,7 @@ static bool io_get_sqe(struct io_ring_ctx *ctx, const struct io_uring_sqe **sqe)
 	/* double index for 128-byte SQEs, twice as long */
 	if (ctx->flags & IORING_SETUP_SQE128)
 		head <<= 1;
-	*sqe = &ctx->sq_sqes_arr[cached_sq_sqes_head][head];
+	*sqe = &ctx->sq_sqes[head];
 	return true;
 }
 
@@ -2337,53 +2338,46 @@ int io_submit_sqes(struct io_ring_ctx *ctx, unsigned int nr)
 
 	if (unlikely(!entries))
 		return 0;
+	
 	/* make sure SQ entry isn't read before tail */
 	ret = left = min(nr, entries);
-
+	
 	if (unlikely(left == ctx->sq_entries)) {
 		/*
 		 * this is sq ring saturate point.
 		 */
-		unsigned tail = ctx->cached_sq_sqes_tail;
-		unsigned next = (tail + 1) % ctx->nr_sq_arr_entries;
-
+		struct io_uring_sqe_node* head = ctx->sq_sqes_list.head;
+		struct io_uring_sqe_node* tail = ctx->sq_sqes_list.tail;
+	
 		/*
 		 * user will submit additional sqes.
 		 * kernel might remember current state of head and tail to process later.
 		 */
-
-		printk("sq_sqes head:%d, next:%d", ctx->cached_sq_sqes_head, next);
 		
-		if (likely(ctx->cached_sq_sqes_head != next)) {
-			printk("sq_arr %d, head:%d, tail:%d", next, ctx->sq_arr[next]->head, ctx->sq_arr[next]->tail);
-			io_remap_sq_ring(ctx, next);
+		tail->sq.head = ctx->rings->sq.head; 
+		tail->sq.tail = ctx->rings->sq.head + entries;
+
+		if (likely(head->next != tail)) {
+			io_remap_sq_ring(ctx, head->next);
 				
 			goto no_expand1;
 		}
 		
-		if(likely(ctx->nr_sq_arr_entries < ctx->sq_arr_entries &&
-					!(ctx->flags & IORING_SETUP_NO_MMAP)))
+		if(likely(!(ctx->flags & IORING_SETUP_NO_MMAP)))
 			io_expand_sq_ring(ctx);
 		else
 			goto no_context1;
 
 no_expand1:
-		 ctx->sq_arr[tail]->head = ctx->cached_sq_head;
-		 ctx->sq_arr[tail]->tail = ctx->cached_sq_head + entries;
-		 printk("saved head:%d, saved tail:%d", ctx->cached_sq_head, ctx->sq_arr[tail]->tail);
+		smp_store_release(&ctx->rings->sq.head, smp_load_acquire(&ctx->rings->sq.tail));
 
-		 smp_store_release(&ctx->rings->sq.head, smp_load_acquire(&rings->sq.tail));
-		 
-		 printk("finish saved head");
-
-		 check_interval = ctx->sq_entries / ctx->sq_arr_entries;
-		 ctx->remap_flag = true;
+		check_interval = ctx->sq_entries / ctx->nr_sq_arr_entries;
 	}
 no_context1:
 	io_get_task_refs(left);
 	io_submit_state_start(&ctx->submit_state, left);
 
-	if (unlikely(ctx->cached_sq_sqes_head != ctx->cached_sq_sqes_tail)) {
+	if (unlikely(ctx->sq_sqes_list.head != ctx->sq_sqes_list.tail)) {
 		start = ktime_get(); 
 	}
 
@@ -2391,50 +2385,40 @@ no_context1:
 		const struct io_uring_sqe *sqe;
 		struct io_kiocb *req;
 	
-		if (unlikely(ctx->cached_sq_sqes_head != ctx->cached_sq_sqes_tail && ++count == check_interval)) {
+		if (unlikely(ctx->sq_sqes_list.head != ctx->sq_sqes_list.tail && ++count == check_interval)) {
 			count = 0;
 			unsigned new_entries = io_sqring_entries(ctx);
 
-			printk("do-while, ctx->cached_sq_sqes_head:%d != ctx->cached_sq_sqes_tail%d, entries:%d", ctx->cached_sq_sqes_head, ctx->cached_sq_sqes_tail, new_entries);
 			if (new_entries == ctx->sq_entries) {
 				/*
 				 * this is sq ring saturate point.
 				 */
-				unsigned tail = ctx->cached_sq_sqes_tail;
-				unsigned next = (ctx->cached_sq_sqes_tail + 1) % ctx->nr_sq_arr_entries;
-
+				struct io_uring_sqe_node* head = ctx->sq_sqes_list.head;
+				struct io_uring_sqe_node* tail = ctx->sq_sqes_list.tail;
+				
 				/*
 				 * user will submit additional sqes.
 				 * kernel might remember current state of head and tail to process later.
 				 */
-
-				printk("2sq_sqes head:%d, next:%d", ctx->cached_sq_sqes_head, next);
-
-				if (likely(ctx->cached_sq_sqes_head != next)) {
-					printk("2sq_arr %d, head:%d, tail:%d", next, ctx->sq_arr[next]->head, ctx->sq_arr[next]->tail);
-					io_remap_sq_ring(ctx, next);
+			
+				tail->sq.head = ctx->rings->sq.head;
+				tail->sq.tail = ctx->rings->sq.head + entries;
+				
+				if (likely(head->next != tail)) {
+					io_remap_sq_ring(ctx, head->next);
 
 					goto no_expand2;
 				}
 
-				if(likely(ctx->nr_sq_arr_entries < ctx->sq_arr_entries &&
-							!(ctx->flags & IORING_SETUP_NO_MMAP)))
+				if(likely(!(ctx->flags & IORING_SETUP_NO_MMAP)))
 					io_expand_sq_ring(ctx);
 				else
 					goto no_context2;
 
 no_expand2:
-				printk("2cached_sq_sqes_tail:%d, tail:%d", ctx->cached_sq_sqes_tail, tail);
+				smp_store_release(&ctx->rings->sq.head, smp_load_acquire(&ctx->rings->sq.tail));
 
-				ctx->sq_arr[tail]->head = ctx->cached_sq_head;
-				ctx->sq_arr[tail]->tail = ctx->cached_sq_head + entries;
-
-				printk("2saved head:%d, saved tail:%d", ctx->cached_sq_head, ctx->sq_arr[tail]->tail);
-
-				printk("sq.head:%d, sq.tail:%d", ctx->rings->sq.head, ctx->rings.sq.tail);
-				smp_store_release(&ctx->rings->sq.head, smp_load_acquire(&rings->sq.tail));
-
-				check_interval = ctx->sq_entries / ctx->sq_arr_entries;
+				check_interval = ctx->sq_entries / ctx->nr_sq_arr_entries;
 				ctx->remap_flag = true;
 			}
 		}
@@ -2465,7 +2449,7 @@ no_context2:
 		current->io_uring->cached_refs += left;
 	}
 
-	if (unlikely(ctx->cached_sq_sqes_head != ctx->cached_sq_sqes_tail)) {
+	if (unlikely(ctx->sq_sqes_list.head != ctx->sq_sqes_list.tail)) {
 		s64 delta_ns;
 		end = ktime_get();
 
@@ -2473,8 +2457,14 @@ no_context2:
 		pr_info("io_get and submit sqes Execution time: %lld ns ", delta_ns);
 	}
 
+//	printk("before submit state");
 	io_submit_state_end(ctx);
+//	printk("after submit state");
 	/* Commit SQ ring head once we've consumed and submitted all SQEs */
+//	printk("before commit");
+//	printk("ctx->cached_sq_head:%d, sq_arr.head:%d\n", ctx->cached_sq_head, ctx->sq_arr[ctx->cached_sq_sqes_head]->head);
+//	printk("ctx->cached_sq_head:%d, sq.head:%d\n", ctx->cached_sq_head, ctx->rings->sq.head);
+	
 	io_commit_sqring(ctx);
 
 	return ret;
@@ -2682,7 +2672,7 @@ static void *io_rings_map(struct io_ring_ctx *ctx, unsigned long uaddr,
 static void *io_sqes_map(struct io_ring_ctx *ctx, unsigned long uaddr,
 			 size_t size)
 {
-	return __io_uaddr_map(&ctx->sqe_pages[0], &ctx->n_sqe_pages, uaddr,
+	return __io_uaddr_map(&ctx->sqe_pages, &ctx->n_sqe_pages, uaddr,
 			      size);
 }
 
@@ -2691,12 +2681,12 @@ static void io_rings_free(struct io_ring_ctx *ctx)
 	if (!(ctx->flags & IORING_SETUP_NO_MMAP)) {
 		io_pages_unmap(ctx->rings, &ctx->ring_pages, &ctx->n_ring_pages,
 			       true);
-		io_pages_unmap(ctx->sq_sqes, &ctx->sqe_pages[0],
+		io_pages_unmap(ctx->sq_sqes, &ctx->sqe_pages,
 			       &ctx->n_sqe_pages, true);
 	} else {
 		io_pages_free(&ctx->ring_pages, ctx->n_ring_pages);
 		ctx->n_ring_pages = 0;
-		io_pages_free(&ctx->sqe_pages[0], ctx->n_sqe_pages);
+		io_pages_free(&ctx->sqe_pages, ctx->n_sqe_pages);
 		ctx->n_sqe_pages = 0;
 		vunmap(ctx->rings);
 		vunmap(ctx->sq_sqes);
@@ -3471,28 +3461,33 @@ bool io_is_uring_fops(struct file *file)
 	return file->f_op == &io_uring_fops;
 }
 
-int io_remap_sq_ring(struct io_ring_ctx *ctx, unsigned int next)
+int io_remap_sq_ring(struct io_ring_ctx *ctx, struct io_uring_sqe_node* next)
 {
 	int ret;
 	struct vm_area_struct *vma = ctx->sqe_vma;
+	unsigned long addr = vma->vm_start;
+	unsigned long len = vma->vm_end - vma->vm_start;
 
 	ktime_t start, end;
 	s64 delta_ns;
-
-	printk("tail:%d head: %d, ctx->nr_sq_arr_entries:%d", (ctx->cached_sq_sqes_tail%ctx->nr_sq_arr_entries), (ctx->cached_sq_sqes_head%ctx->nr_sq_arr_entries), ctx->nr_sq_arr_entries);
-
+	
 	start = ktime_get();
 	mmap_write_lock(vma->vm_mm);
 
 	zap_page_range_single(vma, vma->vm_start, vma->vm_end - vma->vm_start, NULL);
-	flush_tlb_mm_range(vma->vm_mm, vma->vm_start, vma->vm_end, PAGE_SHIFT, false);
 
-	ret = io_uring_mmap_pages(ctx, vma, ctx->sqe_pages[next], ctx->n_sqe_pages);
+	ret = io_uring_mmap_pages(ctx, vma, next->sqe_pages, ctx->n_sqe_pages);	
+
+	if (ret) 
+		pr_err("io_uring_mmap_pages() failed\n");
+
+	flush_tlb_mm_range(vma->vm_mm, vma->vm_start, vma->vm_end, PAGE_SHIFT, false);
 
 	mmap_write_unlock(vma->vm_mm);
 	end = ktime_get();
 
-	ctx->cached_sq_sqes_tail = next;
+	ctx->sq_sqes_list.tail = next;
+	ctx->sq_sqes = next->sqe;
 
 	delta_ns = ktime_to_ns(ktime_sub(end, start));
 	printk("Remapping Execution time: %lld ns", delta_ns);
@@ -3505,6 +3500,8 @@ int io_expand_sq_ring(struct io_ring_ctx *ctx)
 	size_t size;
 	void *ptr;
 	int ret;
+	struct io_uring_sqe_node* new_node;
+	gfp_t gfp = GFP_KERNEL_ACCOUNT | __GFP_ZERO | __GFP_NOWARN;
 
 	ktime_t start, end;	
 	s64 delta_ns;
@@ -3513,22 +3510,28 @@ int io_expand_sq_ring(struct io_ring_ctx *ctx)
 
 	size = array_size(sizeof(struct io_uring_sqe), ctx->sq_entries);
 
-	ptr = io_pages_map(&ctx->sqe_pages[ctx->nr_sq_arr_entries], &ctx->n_sqe_pages, size);	
+	new_node = kvzalloc(sizeof(struct io_uring_sqe_node), gfp);
+	
+	ptr = io_pages_map(&new_node->sqe_pages, &ctx->n_sqe_pages, size);	
 
 	if (IS_ERR(ptr)) {
+		pr_err("io_pages_map err\n");
 		io_rings_free(ctx);
 		return PTR_ERR(ptr);
 	}
 
-	ctx->cached_sq_sqes_tail = ctx->nr_sq_arr_entries;
-	ctx->sq_sqes_arr[ctx->nr_sq_arr_entries++] = ptr;
+	new_node->next = ctx->sq_sqes_list.head;
+	new_node->sqe = ptr;
+	ctx->sq_sqes_list.tail->next = new_node;
+	ctx->nr_sq_arr_entries++;
+	// ctx->sq_sqes_arr[ctx->nr_sq_arr_entries++] = ptr;
 
 	end = ktime_get();
 	delta_ns = ktime_to_ns(ktime_sub(end, start));
-    pr_info("Mapping Execution time: %lld ns ", delta_ns);
+    // pr_info("Mapping Execution time: %lld ns ", delta_ns);
 
 	start = ktime_get();
-	ret = io_remap_sq_ring(ctx, ctx->cached_sq_sqes_tail);
+	ret = io_remap_sq_ring(ctx, new_node);
 	end = ktime_get();
 
 	delta_ns = ktime_to_ns(ktime_sub(end, start));
@@ -3585,15 +3588,13 @@ static __cold int io_allocate_scq_urings(struct io_ring_ctx *ctx,
 
 	io_uring_allocate_buffer(ctx, 10);
 
-	printk("allocate sq_arr:%d", ctx->sq_arr[0]->head);
-
 	if (IS_ERR(ctx->sqe_pages) || IS_ERR(ctx->sq_sqes_arr)) {
 		io_rings_free(ctx);
 		return PTR_ERR(ptr);
 	}
 
 	if (!(ctx->flags & IORING_SETUP_NO_MMAP))
-		ptr = io_pages_map(&ctx->sqe_pages[0], &ctx->n_sqe_pages, size);
+		ptr = io_pages_map(&ctx->sqe_pages, &ctx->n_sqe_pages, size);
 	else
 		ptr = io_sqes_map(ctx, p->sq_off.user_addr, size);
 
@@ -3602,8 +3603,10 @@ static __cold int io_allocate_scq_urings(struct io_ring_ctx *ctx,
 		return PTR_ERR(ptr);
 	}
 
-	ctx->sq_sqes = ptr;
-	ctx->sq_sqes_arr[0] = ptr;
+	ctx->sq_sqes = ctx->sq_sqes_list.head->sqe = ctx->sq_sqes_list.tail->sqe = ptr;
+	
+	// ctx->sq_sqes = ctx->sq_sqes_list->head->sqe = ptr;
+	ctx->sq_sqes_list.head->sqe_pages = ctx->sqe_pages;
 
 	return 0;
 }

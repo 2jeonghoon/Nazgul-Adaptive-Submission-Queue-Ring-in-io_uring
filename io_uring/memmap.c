@@ -243,13 +243,16 @@ void io_uring_allocate_buffer(struct io_ring_ctx *ctx, int nr)
 	gfp_t gfp = GFP_KERNEL_ACCOUNT | __GFP_ZERO | __GFP_NOWARN;
 
 	ctx->sqe_pages = kvmalloc_array(nr, sizeof(struct pages **), gfp);
-	ctx->sq_sqes_arr =
-		kvmalloc_array(nr, sizeof(struct io_uring_sqe *), gfp);
-	ctx->sq_arr = kvmalloc_array(nr, sizeof(struct io_uring*), gfp);
+	ctx->sq_sqes_list.head = ctx->sq_sqes_list.tail = kvzalloc(sizeof(struct io_uring_sqe_node), gfp);
+	ctx->sq_sqes_list.head->next = ctx->sq_sqes_list.head;
+	/*ctx->sq_sqes_arr =
+		kvmalloc_array(nr, sizeof(struct io_uring_sqe *), gfp);*/
+	/*ctx->sq_arr = kvmalloc_array(nr, sizeof(struct io_uring*), gfp);
 
 	for (int i = 0; i < nr; i++) {
 		ctx->sq_arr[i] = kvzalloc(sizeof(struct io_uring), gfp);	
 	}
+	*/
 }
 
 #ifdef CONFIG_MMU
@@ -276,7 +279,7 @@ __cold int io_uring_mmap(struct file *file, struct vm_area_struct *vma)
 		return io_uring_mmap_pages(ctx, vma, ctx->ring_pages, npages);
 	case IORING_OFF_SQES:
 		ctx->sqe_vma = vma;
-		return io_uring_mmap_pages(ctx, vma, ctx->sqe_pages[0],
+		return io_uring_mmap_pages(ctx, vma, ctx->sqe_pages,
 					   ctx->n_sqe_pages);
 	case IORING_OFF_PBUF_RING:
 		return io_pbuf_mmap(file, vma);
