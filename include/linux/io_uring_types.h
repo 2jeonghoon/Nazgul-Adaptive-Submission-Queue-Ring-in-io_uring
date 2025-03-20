@@ -110,6 +110,7 @@ struct io_uring_sqe_node {
 	struct io_uring sq;
 	struct io_uring_sqe_node *next;
 	struct page** sqe_pages;
+	unsigned short n_sqe_pages;
 };
 
 struct io_uring_sqe_list {
@@ -300,10 +301,10 @@ struct io_ring_ctx {
 #endif
 	unsigned evfd_last_cq_tail;
 	unsigned short n_ring_pages;
-	unsigned short n_sqe_pages;
+	// unsigned short n_sqe_pages;
 	// unsigned short n_sqe_arr_pages;
 	struct page **ring_pages;
-	struct page **sqe_pages;
+	// struct page **sqe_pages;
 
 	//unsigned cached_sqe_arr_tail;
 	//unsigned sqe_arr_entries;

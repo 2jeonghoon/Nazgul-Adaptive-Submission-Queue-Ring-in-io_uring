@@ -192,8 +192,10 @@ static __always_inline bool io_fill_cqe_req(struct io_ring_ctx *ctx,
 	 * submission (by quite a lot). Increment the overflow count in
 	 * the ring.
 	 */
-	if (unlikely(!io_get_cqe(ctx, &cqe)))
+	if (unlikely(!io_get_cqe(ctx, &cqe))) {
+		printk("fail to get cqe\n");
 		return false;
+	}
 
 	if (trace_io_uring_complete_enabled())
 		trace_io_uring_complete(req->ctx, req, req->cqe.user_data,
