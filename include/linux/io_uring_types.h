@@ -301,7 +301,7 @@ struct io_ring_ctx {
 #endif
 	unsigned evfd_last_cq_tail;
 	unsigned short n_ring_pages;
-	// unsigned short n_sqe_pages;
+	//unsigned short n_sqe_pages;
 	// unsigned short n_sqe_arr_pages;
 	struct page **ring_pages;
 	// struct page **sqe_pages;
