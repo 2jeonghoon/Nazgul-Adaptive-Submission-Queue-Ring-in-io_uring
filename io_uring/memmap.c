@@ -110,8 +110,10 @@ void io_pages_unmap(void *ptr, struct page ***pages, unsigned short *npages,
 		for (i = 0; i < *npages; i++)
 			put_page(to_free[i]);
 	}
-	if (do_vunmap)
+	if (do_vunmap) {
+		printk("do vunmap\n");
 		vunmap(ptr);
+	}
 	kvfree(*pages);
 	*pages = NULL;
 	*npages = 0;
@@ -242,10 +244,13 @@ void io_uring_allocate_buffer(struct io_ring_ctx *ctx, int nr)
 {
 	gfp_t gfp = GFP_KERNEL_ACCOUNT | __GFP_ZERO | __GFP_NOWARN;
 
-	ctx->sq_sqes_list.head = ctx->sq_sqes_list.tail = kvzalloc(sizeof(struct io_uring_sqe_node), gfp);
-	ctx->sq_sqes_list.head->next = ctx->sq_sqes_list.head;
-	ctx->sq_sqes_list.tail->next = ctx->sq_sqes_list.head;
-	ctx->sq_sqes_list.head->sqe_pages = kvmalloc_array(nr, sizeof(struct pages **), gfp);
+	struct io_uring_sqe_node* node = kvzalloc(sizeof(struct io_uring_sqe_node), gfp);
+	ctx->sq_sqes_list.head = node;
+	ctx->sq_sqes_list.tail = node;
+	node->next = node;
+	// ctx->sq_sqes_list.head->sqe_pages = kvmalloc(sizeof(struct pages **), gfp);
+
+	printk("allocated head:%p, tail:%p\n", ctx->sq_sqes_list.head, ctx->sq_sqes_list.tail);
 
 	/*ctx->sq_sqes_arr =
 		kvmalloc_array(nr, sizeof(struct io_uring_sqe *), gfp);*/

@@ -302,10 +302,11 @@ static inline unsigned int io_sqring_entries(struct io_ring_ctx *ctx)
 
 	/* make sure SQ entry isn't read before tail */
 	
-	if (unlikely(ctx->sq_sqes_list.head != ctx->sq_sqes_list.tail))
-		entries = smp_load_acquire(&rings->sq.tail) - rings->sq.head;
-	else	
-		entries = smp_load_acquire(&rings->sq.tail) - ctx->cached_sq_head;
+//	if (unlikely(ctx->sq_sqes_list.head != ctx->sq_sqes_list.tail))
+
+	entries = smp_load_acquire(&rings->sq.tail) - rings->sq.head;
+//	else	
+//		entries = smp_load_acquire(&rings->sq.tail) - ctx->cached_sq_head;
 	
 	return min(entries, ctx->sq_entries);
 }
