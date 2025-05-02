@@ -2283,8 +2283,6 @@ static void io_commit_sqring(struct io_ring_ctx *ctx)
 		head->sq.head = ctx->cached_sq_head;
 		ctx->sq_sqes = head->next->sqe;
 		ctx->cached_sq_head = head->next->sq.head;
-
-		// printk("head change to next: %p to %p\n", head, head->next);
 		
 		ctx->sq_sqes_list.head = head->next;
 
@@ -2400,7 +2398,7 @@ int io_submit_sqes(struct io_ring_ctx *ctx, unsigned int nr)
 					io_remap_sq_ring(ctx, tail->next);
 				}
 
-				smp_store_release(&ctx->rings->sq.head, smp_load_acquire(&ctx->rings->sq.tail));
+				smp_store_release(&ctx->rings->sq.head, tail->sq.tail);
 				// printk("rings->sq.head:%d\n", ctx->rings->sq.head);
 				//smp_store_release(&ctx->rings->sq.head, tail->sq.tail);
 			}
@@ -3817,7 +3815,6 @@ static __cold int io_uring_create(unsigned entries, struct io_uring_params *p,
 
 	trace_io_uring_create(ret, ctx, p->sq_entries, p->cq_entries, p->flags);
 
-	ctx->sq_arr_entries = 10;
 	ctx->nr_sq_arr_entries = 1;
 
 	return ret;
