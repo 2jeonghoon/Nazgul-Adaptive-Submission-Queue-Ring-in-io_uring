@@ -102,8 +102,7 @@ __cold void io_uring_show_fdinfo(struct seq_file *m, struct file *file)
 		sq_idx = READ_ONCE(ctx->sq_array[entry & sq_mask]);
 		if (sq_idx > sq_mask)
 			continue;
-//		sqe = &ctx->sq_sqes[sq_idx << sq_shift];
-		sqe = &ctx->sq_sqes_arr[0][sq_idx << sq_shift];
+		sqe = &ctx->sq_sqes[sq_idx << sq_shift];
 		seq_printf(m,
 			   "%5u: opcode:%s, fd:%d, flags:%x, off:%llu, "
 			   "addr:0x%llx, rw_flags:0x%x, buf_index:%d "
