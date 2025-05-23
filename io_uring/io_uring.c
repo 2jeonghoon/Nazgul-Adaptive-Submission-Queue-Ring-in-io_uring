@@ -922,9 +922,13 @@ bool io_req_post_cqe(struct io_kiocb *req, s32 res, u32 cflags)
 	return posted;
 }
 
+static int complete_post = 0;
+
 static void io_req_complete_post(struct io_kiocb *req, unsigned issue_flags)
 {
 	struct io_ring_ctx *ctx = req->ctx;
+
+	complete_post++;
 
 	/*
 	 * All execution paths but io-wq use the deferred completions by
@@ -1744,26 +1748,40 @@ static bool io_assign_file(struct io_kiocb *req, const struct io_issue_def *def,
 	return !!req->file;
 }
 
+static int issue_sqe = 0;
+static int issue_complete = 0;
+static int n_audit_uring_entry = 0;
+static int n_audit_uring_exit = 0;
+static int go_final_ret = 0;
+
 static int io_issue_sqe(struct io_kiocb *req, unsigned int issue_flags)
 {
 	const struct io_issue_def *def = &io_issue_defs[req->opcode];
 	const struct cred *creds = NULL;
 	int ret;
 
-	if (unlikely(!io_assign_file(req, def, issue_flags)))
+	issue_sqe++;
+
+	if (unlikely(!io_assign_file(req, def, issue_flags))) {
+		printk("!io_assign_file");
 		return -EBADF;
+	}
 
 	if (unlikely((req->flags & REQ_F_CREDS) &&
 		     req->creds != current_cred()))
 		creds = override_creds(req->creds);
 
-	if (!def->audit_skip)
+	if (!def->audit_skip) {
+		n_audit_uring_entry++;
 		audit_uring_entry(req->opcode);
-
+	}
+	
 	ret = def->issue(req, issue_flags);
 
-	if (!def->audit_skip)
+	if (!def->audit_skip) {
+		n_audit_uring_exit++;
 		audit_uring_exit(!ret, ret);
+	}
 
 	if (creds)
 		revert_creds(creds);
@@ -1778,6 +1796,7 @@ static int io_issue_sqe(struct io_kiocb *req, unsigned int issue_flags)
 	}
 
 	if (ret == IOU_ISSUE_SKIP_COMPLETE) {
+		issue_complete++;
 		ret = 0;
 		io_arm_ltimeout(req);
 
@@ -1786,6 +1805,20 @@ static int io_issue_sqe(struct io_kiocb *req, unsigned int issue_flags)
 		    def->iopoll_queue)
 			io_iopoll_req_issued(req, issue_flags);
 	}
+	go_final_ret++;
+
+	/*printk(KERN_INFO "issue_flags = 0x%x\n", issue_flags);
+
+	if (issue_flags & IO_URING_F_NONBLOCK)
+		printk(KERN_INFO "  IO_URING_F_NONBLOCK enabled\n");
+	if (issue_flags & IO_URING_F_COMPLETE_DEFER)
+	   	printk(KERN_INFO "  IO_URING_F_COMPLETE_DEFER enabled\n");
+	if (issue_flags & IO_URING_F_UNLOCKED)
+		printk(KERN_INFO "  IO_URING_F_UNLOCKED enabled\n");
+	if (issue_flags & IO_URING_F_MULTISHOT)
+		printk(KERN_INFO "  IO_URING_F_MULTISHOT enabled\n");
+
+	printk("issue opcode %d returned %d\n", req->opcode, ret);*/
 	return ret;
 }
 
@@ -1911,6 +1944,7 @@ fail:
 inline struct file *io_file_get_fixed(struct io_kiocb *req, int fd,
 				      unsigned int issue_flags)
 {
+	printk("io_file_get_fixed");
 	struct io_ring_ctx *ctx = req->ctx;
 	struct io_fixed_file *slot;
 	struct file *file = NULL;
@@ -1926,6 +1960,7 @@ inline struct file *io_file_get_fixed(struct io_kiocb *req, int fd,
 	req->flags |= io_slot_flags(slot);
 	file = io_slot_file(slot);
 out:
+	printk("io_file_get_fixed go out");
 	io_ring_submit_unlock(ctx, issue_flags);
 	return file;
 }
@@ -1971,11 +2006,14 @@ static void io_queue_async(struct io_kiocb *req, int ret)
 		io_queue_linked_timeout(linked_timeout);
 }
 
+static int issue = 0;
+
 static inline void io_queue_sqe(struct io_kiocb *req)
 	__must_hold(&req->ctx->uring_lock)
 {
 	int ret;
 
+	issue++;
 	ret = io_issue_sqe(req,
 			   IO_URING_F_NONBLOCK | IO_URING_F_COMPLETE_DEFER);
 
@@ -1983,8 +2021,9 @@ static inline void io_queue_sqe(struct io_kiocb *req)
 	 * We async punt it if the file wasn't marked NOWAIT, or if the file
 	 * doesn't support non-blocking read/write attempts
 	 */
-	if (unlikely(ret))
+	if (unlikely(ret)) {
 		io_queue_async(req, ret);
+	}
 }
 
 static void io_queue_sqe_fallback(struct io_kiocb *req)
@@ -2270,22 +2309,17 @@ static void io_submit_state_start(struct io_submit_state *state,
 static void io_commit_sqring(struct io_ring_ctx *ctx)
 {
 	struct io_rings *rings = ctx->rings;
-	
+	struct io_uring_sqe_node* head = ctx->sq_sqes_list.head;
+
 	/*
 	 * Ensure any loads from the SQEs are done at this point,
 	 * since once we write the new head, the application could
 	 * write new data to them.
 	 */
-	
-	if(unlikely(ctx->sq_sqes_list.head != ctx->sq_sqes_list.tail)) {
-		struct io_uring_sqe_node* head = ctx->sq_sqes_list.head;
-		
-		head->sq.head = ctx->cached_sq_head;
-		ctx->sq_sqes = head->next->sqe;
-		ctx->cached_sq_head = head->next->sq.head;
-		
-		ctx->sq_sqes_list.head = head->next;
 
+	if(unlikely(ctx->sq_sqes_list.head != ctx->sq_sqes_list.tail)) {
+		head = head->next;
+		ctx->sq_sqes = head->next->sqe;
 
 		return;
 	}
@@ -2336,28 +2370,36 @@ static bool io_get_sqe(struct io_ring_ctx *ctx, const struct io_uring_sqe **sqe)
 	return true;
 }
 
+typedef struct conn_info {
+	unsigned fd;
+	unsigned type;
+} conn_info;
+
+static int n_submit_sqe = 0;
+
 int io_submit_sqes(struct io_ring_ctx *ctx, unsigned int nr)
 	__must_hold(&ctx->uring_lock)
 {
-	unsigned int new_entries, entries;
+	unsigned int entries = io_sqring_entries(ctx);
 	unsigned int left;
 	int ret;
-	int check_interval = ctx->sq_entries / (ctx->nr_sq_arr_entries * 4);
-	int count = check_interval - 1;
-	bool initial_flg = true;
-
-	// ktime_t start, end;	
-
-	entries = new_entries = io_sqring_entries(ctx);
+		/*
+	 *	entries is the item that needs to be processed now
+	 */
 
 	if (unlikely(!entries))
 		return 0;
+
+	int check_interval = ctx->sq_entries / (ctx->nr_sq_arr_entries * 4);
+	int count = check_interval - 1;
 
 	if (check_interval == 0)
 		check_interval = 1;
 
 	/* make sure SQ entry isn't read before tail */
 	ret = left = min(nr, entries);
+
+	ctx->sq_sqes_list.head->sq.head += left;
 	io_get_task_refs(left);
 	io_submit_state_start(&ctx->submit_state, left);
 
@@ -2368,12 +2410,7 @@ int io_submit_sqes(struct io_ring_ctx *ctx, unsigned int nr)
 		if (unlikely(++count == check_interval)) {
 			count = 0;
 
-			if (!initial_flg) 
-				new_entries = io_sqring_entries(ctx);
-			else
-				initial_flg = false;
-
-			if (new_entries == ctx->sq_entries) {
+			if (io_sqring_full(ctx)) {
 				/*
 				 * this is sq ring saturate point.
 				 */
@@ -2381,31 +2418,27 @@ int io_submit_sqes(struct io_ring_ctx *ctx, unsigned int nr)
 				struct io_uring_sqe_node* head = ctx->sq_sqes_list.head;
 				struct io_uring_sqe_node* tail = ctx->sq_sqes_list.tail;
 				
-				// printk("==== saturate(%d) ==== head:%p, tail:%p, tail->next:%p\n", left, (void*)ctx->sq_sqes_list.head, (void*)ctx->sq_sqes_list.tail, (void*)tail->next);
 				/*
 				 * user will submit additional sqes.
 				 * kernel might remember current state of head and tail to process later.
 				 */
 			
-				tail->sq.head = ctx->rings->sq.head;
-				tail->sq.tail = ctx->rings->sq.head + new_entries;
-				
-				// printk("%d: save tail->head:%d, tail->sq(%p):%d, rings->sq.tail:%d\n", current->pid, tail->sq.head, tail->sqe, tail->sq.tail, ctx->rings->sq.tail);
-
 				if (unlikely(tail->next == head)) {
 					io_expand_sq_ring(ctx);
 				} else {
 					io_remap_sq_ring(ctx, tail->next);
 				}
 
-				smp_store_release(&ctx->rings->sq.head, tail->sq.tail);
-				// printk("rings->sq.head:%d\n", ctx->rings->sq.head);
-				//smp_store_release(&ctx->rings->sq.head, tail->sq.tail);
+				// printk("smp_store_release to %d, head:%d", tail->sq.tail, tail->sq.head);
+				smp_store_release(&ctx->rings->sq.head, smp_load_acquire(&ctx->rings->sq.tail)) ;
 			}
 		}
-		if (unlikely(!io_alloc_req(ctx, &req)))
+		if (unlikely(!io_alloc_req(ctx, &req))) {
+			printk("fail to io_alloc_req");
 			break;
+		}
 		if (unlikely(!io_get_sqe(ctx, &sqe))) {
+			printk("fait to io_get_sqe");
 			io_req_add_to_cache(req, ctx);
 			break;
 		}
@@ -2419,9 +2452,11 @@ int io_submit_sqes(struct io_ring_ctx *ctx, unsigned int nr)
 			left--;
 			break;
 		}
+		n_submit_sqe++;
 	} while (--left);
 
 	if (unlikely(left)) {
+		printk("unlikely(left)");
 		ret -= left;
 		/* try again if it submitted nothing and can't allocate a req */
 		if (!ret && io_req_cache_empty(ctx))
@@ -2646,6 +2681,17 @@ static void *io_sqes_map(struct io_ring_ctx *ctx, unsigned long uaddr,
 static void io_rings_free(struct io_ring_ctx *ctx)
 {
 	printk("nr_list:%d\n", ctx->nr_sq_arr_entries);
+	printk("completion:%d\n", completion);
+	printk("issue:%d\n", issue);
+	printk("complete_post:%d\n", complete_post);
+	printk("issue_sqe:%d\n", issue_sqe);
+	printk("issue_complete:%d\n", issue_complete);
+	printk("req_complete_defer:%d\n", req_complete_defer);
+	printk("audit_uring_entry:%d\n", n_audit_uring_entry);
+	printk("audit_uring_exit:%d\n", n_audit_uring_exit);
+	printk("go_final_ret:%d\n", go_final_ret);
+	printk("n_submit_sqe:%d\n", n_submit_sqe);
+
 	if (!(ctx->flags & IORING_SETUP_NO_MMAP)) {
 		/*struct io_uring_sqe_node *cur = ctx->sq_sqes_list.tail;
 		while (cur->sqe != ctx->first_sq_sqes) {
@@ -3449,13 +3495,8 @@ int io_remap_sq_ring(struct io_ring_ctx *ctx, struct io_uring_sqe_node* node)
 {
 	int ret;
 	struct vm_area_struct *vma = ctx->sqe_vma;
+	struct io_uring_sqe_node* tail = ctx->sq_sqes_list.tail;
 
-	/*ktime_t start, end;
-	s64 delta_ns;*/
-	
-	node->sq.head = ctx->rings->sq.tail;
-
-	//start = ktime_get();
 	mmap_write_lock(vma->vm_mm);
 
 	zap_page_range_single(vma, vma->vm_start, vma->vm_end - vma->vm_start, NULL);
@@ -3471,11 +3512,6 @@ int io_remap_sq_ring(struct io_ring_ctx *ctx, struct io_uring_sqe_node* node)
 
 	ctx->sq_sqes_list.tail = node;
 
-	/*end = ktime_get();
-	delta_ns = ktime_to_ns(ktime_sub(end, start));
-	printk("%d Remapping Execution time: %lld ns", current->pid, delta_ns);*/
-
-	//printk("Remapping Execution");
 	return ret;
 }
 
@@ -3486,11 +3522,6 @@ int io_expand_sq_ring(struct io_ring_ctx *ctx)
 	int ret;
 	struct io_uring_sqe_node* new_node;
 	gfp_t gfp = GFP_KERNEL_ACCOUNT | __GFP_ZERO | __GFP_NOWARN;
-
-	/*ktime_t start, end;	
-	s64 delta_ns;*/
-
-	//start = ktime_get();
 
 	size = array_size(sizeof(struct io_uring_sqe), ctx->sq_entries);
 	if (!size) return -EOVERFLOW;
@@ -3508,20 +3539,11 @@ int io_expand_sq_ring(struct io_ring_ctx *ctx)
 	}
 
 	new_node->sqe = ptr;
-	new_node->next = ctx->sq_sqes_list.head;
 	ctx->sq_sqes_list.tail->next = new_node;
 	ctx->nr_sq_arr_entries++;
 
-	/*end = ktime_get();
-	delta_ns = ktime_to_ns(ktime_sub(end, start));
-    pr_info("%d Mapping Execution time: %lld ns ", current->pid, delta_ns);*/
-
-    // pr_info("Mapping Execution tail:%p, tail->next:%p\n", (void*)ctx->sq_sqes_list.tail, (void*)ctx->sq_sqes_list.tail->next);
-
 	ret = io_remap_sq_ring(ctx, new_node);
 	
-	// printk("After remap in mapping tail:%p\n", (void*)ctx->sq_sqes_list.tail);
-
 	if (ret) {
 		printk(KERN_ERR "vm_insert_page failed: %d ", ret);
 		return ret;
@@ -3584,9 +3606,9 @@ static __cold int io_allocate_scq_urings(struct io_ring_ctx *ctx,
 		return PTR_ERR(ptr);
 	}
 
-	ctx->sq_sqes = ctx->sq_sqes_list.head->sqe = ctx->first_sq_sqes = ptr;
+	ctx->sq_sqes = ctx->sq_sqes_list.head->sqe = ptr;
 
-	printk("%d, ctx->first_sq_sqes:%p\n", current->pid, ctx->first_sq_sqes);
+	printk("%d\n", current->pid);
 	printk("head:sqe=%p, tail:sqe=%p", ctx->sq_sqes_list.head->sqe, ctx->sq_sqes_list.tail->sqe);
 
 	return 0;

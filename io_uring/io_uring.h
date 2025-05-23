@@ -182,6 +182,8 @@ static inline bool io_get_cqe(struct io_ring_ctx *ctx,
 	return io_get_cqe_overflow(ctx, ret, false);
 }
 
+static int completion = 0;
+
 static __always_inline bool io_fill_cqe_req(struct io_ring_ctx *ctx,
 					    struct io_kiocb *req)
 {
@@ -195,6 +197,8 @@ static __always_inline bool io_fill_cqe_req(struct io_ring_ctx *ctx,
 	if (unlikely(!io_get_cqe(ctx, &cqe))) {
 		return false;
 	}
+
+	completion++;
 
 	if (trace_io_uring_complete_enabled())
 		trace_io_uring_complete(req->ctx, req, req->cqe.user_data,
@@ -291,8 +295,11 @@ static inline void io_cqring_wake(struct io_ring_ctx *ctx)
 static inline bool io_sqring_full(struct io_ring_ctx *ctx)
 {
 	struct io_rings *r = ctx->rings;
+	struct io_uring_sqe_node* tail = ctx->sq_sqes_list.tail;
 
-	return READ_ONCE(r->sq.tail) - ctx->cached_sq_head == ctx->sq_entries;
+	tail->sq.tail = READ_ONCE(r->sq.tail);
+
+	return tail->sq.tail - READ_ONCE(r->sq.head) == ctx->sq_entries;
 }
 
 static inline unsigned int io_sqring_entries(struct io_ring_ctx *ctx)
@@ -301,13 +308,7 @@ static inline unsigned int io_sqring_entries(struct io_ring_ctx *ctx)
 	unsigned int entries;
 
 	/* make sure SQ entry isn't read before tail */
-	
-//	if (unlikely(ctx->sq_sqes_list.head != ctx->sq_sqes_list.tail))
-
-	entries = smp_load_acquire(&rings->sq.tail) - rings->sq.head;
-//	else	
-//		entries = smp_load_acquire(&rings->sq.tail) - ctx->cached_sq_head;
-	
+	entries = smp_load_acquire(&rings->sq.tail) - ctx->cached_sq_head;
 	return min(entries, ctx->sq_entries);
 }
 
@@ -358,6 +359,8 @@ static inline void io_tw_lock(struct io_ring_ctx *ctx, struct io_tw_state *ts)
 	lockdep_assert_held(&ctx->uring_lock);
 }
 
+static int req_complete_defer = 0;
+
 /*
  * Don't complete immediately but use deferred completion infrastructure.
  * Protected by ->uring_lock and can only be used either with
@@ -367,6 +370,8 @@ static inline void io_req_complete_defer(struct io_kiocb *req)
 	__must_hold(&req->ctx->uring_lock)
 {
 	struct io_submit_state *state = &req->ctx->submit_state;
+	
+	req_complete_defer++;
 
 	lockdep_assert_held(&req->ctx->uring_lock);
 

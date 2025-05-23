@@ -1118,8 +1118,9 @@ int io_recv(struct io_kiocb *req, unsigned int issue_flags)
 	size_t len = sr->len;
 
 	if (!(req->flags & REQ_F_POLLED) &&
-	    (sr->flags & IORING_RECVSEND_POLL_FIRST))
+	    (sr->flags & IORING_RECVSEND_POLL_FIRST)) {
 		return -EAGAIN;
+	}
 
 	sock = sock_from_file(req->file);
 	if (unlikely(!sock))
@@ -1152,10 +1153,10 @@ retry_multishot:
 				io_kbuf_recycle(req, issue_flags);
 				return IOU_ISSUE_SKIP_COMPLETE;
 			}
-
 			return -EAGAIN;
 		}
 		if (ret > 0 && io_net_retry(sock, flags)) {
+			printk("ret > 0 && io_net_retry(sock, flags)\n");
 			sr->len -= ret;
 			sr->buf += ret;
 			sr->done_io += ret;

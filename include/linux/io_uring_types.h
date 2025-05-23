@@ -223,10 +223,6 @@ struct io_ring_ctx {
 		struct io_alloc_cache rw_cache;
 		struct io_alloc_cache uring_cache;
 		struct hlist_head cancelable_uring_cmd;
-		struct io_uring_sqe *first_sq_sqes;
-		struct io_uring_sqe_list sq_sqes_list;
-		unsigned nr_sq_arr_entries; 
-		struct vm_area_struct *sqe_vma;
 	} ____cacheline_aligned_in_smp;
 	struct {
 		struct io_uring_cqe *cqe_cached;
@@ -298,6 +294,10 @@ struct io_ring_ctx {
 	unsigned evfd_last_cq_tail;
 	unsigned short n_ring_pages;
 	struct page **ring_pages;
+	struct io_uring_sqe_list sq_sqes_list;
+	unsigned nr_sq_arr_entries; 
+	struct vm_area_struct *sqe_vma;
+
 };
 
 struct io_tw_state {};
