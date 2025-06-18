@@ -564,8 +564,23 @@ int io_sendmsg(struct io_kiocb *req, unsigned int issue_flags)
 	return IOU_OK;
 }
 
+extern int n_io_send;
+extern int n_io_send_eagain_1;
+extern int n_io_send_eagain_2;
+extern int n_io_send_eagain_3;
+extern int n_io_send_enotsock;
+
+
+extern int n_io_recv;
+extern int n_io_recv_eagain_1;
+extern int n_io_recv_eagain_2;
+extern int n_io_recv_eagain_3;
+extern int n_io_recv_enotsock;
+
+
 int io_send(struct io_kiocb *req, unsigned int issue_flags)
 {
+	n_io_send++;
 	struct io_sr_msg *sr = io_kiocb_to_cmd(req, struct io_sr_msg);
 	struct io_async_msghdr *kmsg = req->async_data;
 	struct socket *sock;
@@ -574,12 +589,16 @@ int io_send(struct io_kiocb *req, unsigned int issue_flags)
 	int ret;
 
 	sock = sock_from_file(req->file);
-	if (unlikely(!sock))
+	if (unlikely(!sock)) {
+		n_io_send_enotsock++;
 		return -ENOTSOCK;
+	}
 
 	if (!(req->flags & REQ_F_POLLED) &&
-	    (sr->flags & IORING_RECVSEND_POLL_FIRST))
+	    (sr->flags & IORING_RECVSEND_POLL_FIRST)) {
+		n_io_send_eagain_1++;
 		return -EAGAIN;
+	}
 
 	flags = sr->msg_flags;
 	if (issue_flags & IO_URING_F_NONBLOCK)
@@ -630,14 +649,17 @@ retry_bundle:
 	kmsg->msg.msg_flags = flags;
 	ret = sock_sendmsg(sock, &kmsg->msg);
 	if (ret < min_ret) {
-		if (ret == -EAGAIN && (issue_flags & IO_URING_F_NONBLOCK))
+		if (ret == -EAGAIN && (issue_flags & IO_URING_F_NONBLOCK)) {
+			n_io_send_eagain_2++;
 			return -EAGAIN;
+		}
 
 		if (ret > 0 && io_net_retry(sock, flags)) {
 			sr->len -= ret;
 			sr->buf += ret;
 			sr->done_io += ret;
 			req->flags |= REQ_F_BL_NO_RECYCLE;
+			n_io_send_eagain_3++;
 			return -EAGAIN;
 		}
 		if (ret == -ERESTARTSYS)
@@ -1109,6 +1131,7 @@ map_ubuf:
 
 int io_recv(struct io_kiocb *req, unsigned int issue_flags)
 {
+	n_io_recv++;
 	struct io_sr_msg *sr = io_kiocb_to_cmd(req, struct io_sr_msg);
 	struct io_async_msghdr *kmsg = req->async_data;
 	struct socket *sock;
@@ -1119,12 +1142,15 @@ int io_recv(struct io_kiocb *req, unsigned int issue_flags)
 
 	if (!(req->flags & REQ_F_POLLED) &&
 	    (sr->flags & IORING_RECVSEND_POLL_FIRST)) {
+		n_io_recv_eagain_1++;
 		return -EAGAIN;
 	}
 
 	sock = sock_from_file(req->file);
-	if (unlikely(!sock))
+	if (unlikely(!sock)) {
+		n_io_recv_enotsock++;
 		return -ENOTSOCK;
+	}
 
 	flags = sr->msg_flags;
 	if (force_nonblock)
@@ -1153,14 +1179,15 @@ retry_multishot:
 				io_kbuf_recycle(req, issue_flags);
 				return IOU_ISSUE_SKIP_COMPLETE;
 			}
+			n_io_recv_eagain_2++;
 			return -EAGAIN;
 		}
 		if (ret > 0 && io_net_retry(sock, flags)) {
-			printk("ret > 0 && io_net_retry(sock, flags)\n");
 			sr->len -= ret;
 			sr->buf += ret;
 			sr->done_io += ret;
 			req->flags |= REQ_F_BL_NO_RECYCLE;
+			n_io_recv_eagain_3++;
 			return -EAGAIN;
 		}
 		if (ret == -ERESTARTSYS)

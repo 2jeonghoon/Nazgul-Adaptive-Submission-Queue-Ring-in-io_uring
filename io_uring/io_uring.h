@@ -17,6 +17,7 @@
 #include <trace/events/io_uring.h>
 #endif
 
+
 enum {
 	IOU_OK = 0,
 	IOU_ISSUE_SKIP_COMPLETE = -EIOCBQUEUED,
@@ -96,8 +97,8 @@ int io_ring_add_registered_file(struct io_uring_task *tctx, struct file *file,
 
 int io_poll_issue(struct io_kiocb *req, struct io_tw_state *ts);
 int io_submit_sqes(struct io_ring_ctx *ctx, unsigned int nr);
-int io_remap_sq_ring(struct io_ring_ctx *ctx, struct io_uring_sqe_node* new_node);
-int io_expand_sq_ring(struct io_ring_ctx *ctx);
+int io_remap_sq_ring(struct io_ring_ctx *ctx, struct io_uring_sqe_node* new_node, u32 tail);
+int io_expand_sq_ring(struct io_ring_ctx *ctx, u32 tail);
 int io_do_iopoll(struct io_ring_ctx *ctx, bool force_nonspin);
 void __io_submit_flush_completions(struct io_ring_ctx *ctx);
 
@@ -214,8 +215,11 @@ static __always_inline bool io_fill_cqe_req(struct io_ring_ctx *ctx,
 	return true;
 }
 
+static int n_req_set_fail = 0;
+
 static inline void req_set_fail(struct io_kiocb *req)
 {
+	n_req_set_fail++;
 	req->flags |= REQ_F_FAIL;
 	if (req->flags & REQ_F_CQE_SKIP) {
 		req->flags &= ~REQ_F_CQE_SKIP;
@@ -295,11 +299,8 @@ static inline void io_cqring_wake(struct io_ring_ctx *ctx)
 static inline bool io_sqring_full(struct io_ring_ctx *ctx)
 {
 	struct io_rings *r = ctx->rings;
-	struct io_uring_sqe_node* tail = ctx->sq_sqes_list.tail;
 
-	tail->sq.tail = READ_ONCE(r->sq.tail);
-
-	return tail->sq.tail - READ_ONCE(r->sq.head) == ctx->sq_entries;
+	return READ_ONCE(r->sq.tail) - READ_ONCE(r->sq.head) == ctx->sq_entries;
 }
 
 static inline unsigned int io_sqring_entries(struct io_ring_ctx *ctx)
@@ -308,7 +309,11 @@ static inline unsigned int io_sqring_entries(struct io_ring_ctx *ctx)
 	unsigned int entries;
 
 	/* make sure SQ entry isn't read before tail */
-	entries = smp_load_acquire(&rings->sq.tail) - ctx->cached_sq_head;
+	if (likely(ctx->sq_sqes_list.head == ctx->sq_sqes_list.tail))
+		entries = smp_load_acquire(&rings->sq.tail) - ctx->cached_sq_head;
+	else 
+		entries = ctx->sq_sqes_list.head->sq.tail - ctx->cached_sq_head;
+
 	return min(entries, ctx->sq_entries);
 }
 

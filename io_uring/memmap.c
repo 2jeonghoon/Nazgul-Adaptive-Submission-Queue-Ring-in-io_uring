@@ -248,18 +248,6 @@ void io_uring_allocate_buffer(struct io_ring_ctx *ctx, int nr)
 	ctx->sq_sqes_list.head = node;
 	ctx->sq_sqes_list.tail = node;
 	node->next = node;
-	// ctx->sq_sqes_list.head->sqe_pages = kvmalloc(sizeof(struct pages **), gfp);
-
-	printk("allocated head:%p, tail:%p\n", ctx->sq_sqes_list.head, ctx->sq_sqes_list.tail);
-
-	/*ctx->sq_sqes_arr =
-		kvmalloc_array(nr, sizeof(struct io_uring_sqe *), gfp);*/
-	/*ctx->sq_arr = kvmalloc_array(nr, sizeof(struct io_uring*), gfp);
-
-	for (int i = 0; i < nr; i++) {
-		ctx->sq_arr[i] = kvzalloc(sizeof(struct io_uring), gfp);	
-	}
-	*/
 }
 
 #ifdef CONFIG_MMU

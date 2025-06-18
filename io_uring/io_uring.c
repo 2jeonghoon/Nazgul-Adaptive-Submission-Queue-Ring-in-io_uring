@@ -136,7 +136,7 @@ struct io_defer_entry {
 #define IO_REQ_LINK_FLAGS (REQ_F_LINK | REQ_F_HARDLINK)
 
 /*
- * No waiters. It's larger than any valid value of the tw counter
+  No waiters. It's larger than any valid value of the tw counter
  * so that tests against ->cq_wait_nr would fail and skip wake_up().
  */
 #define IO_CQ_WAKE_INIT (-1U)
@@ -961,9 +961,12 @@ static void io_req_complete_post(struct io_kiocb *req, unsigned issue_flags)
 	req_ref_put(req);
 }
 
+static int req_defer_failed = 0;
+
 void io_req_defer_failed(struct io_kiocb *req, s32 res)
 	__must_hold(&ctx->uring_lock)
 {
+	req_defer_failed++;
 	const struct io_cold_def *def = &io_cold_defs[req->opcode];
 
 	lockdep_assert_held(&req->ctx->uring_lock);
@@ -1807,18 +1810,6 @@ static int io_issue_sqe(struct io_kiocb *req, unsigned int issue_flags)
 	}
 	go_final_ret++;
 
-	/*printk(KERN_INFO "issue_flags = 0x%x\n", issue_flags);
-
-	if (issue_flags & IO_URING_F_NONBLOCK)
-		printk(KERN_INFO "  IO_URING_F_NONBLOCK enabled\n");
-	if (issue_flags & IO_URING_F_COMPLETE_DEFER)
-	   	printk(KERN_INFO "  IO_URING_F_COMPLETE_DEFER enabled\n");
-	if (issue_flags & IO_URING_F_UNLOCKED)
-		printk(KERN_INFO "  IO_URING_F_UNLOCKED enabled\n");
-	if (issue_flags & IO_URING_F_MULTISHOT)
-		printk(KERN_INFO "  IO_URING_F_MULTISHOT enabled\n");
-
-	printk("issue opcode %d returned %d\n", req->opcode, ret);*/
 	return ret;
 }
 
@@ -1977,10 +1968,17 @@ struct file *io_file_get_normal(struct io_kiocb *req, int fd)
 	return file;
 }
 
+static int queue_async = 0;
+static int n_apoll_ready = 0;
+static int n_apoll_aborted = 0;
+static int n_apoll_ok = 0;
+
 static void io_queue_async(struct io_kiocb *req, int ret)
 	__must_hold(&req->ctx->uring_lock)
 {
 	struct io_kiocb *linked_timeout;
+
+	queue_async++;
 
 	if (ret != -EAGAIN || (req->flags & REQ_F_NOWAIT)) {
 		io_req_defer_failed(req, ret);
@@ -1991,14 +1989,17 @@ static void io_queue_async(struct io_kiocb *req, int ret)
 
 	switch (io_arm_poll_handler(req, 0)) {
 	case IO_APOLL_READY:
+		n_apoll_ready++;
 		io_kbuf_recycle(req, 0);
 		io_req_task_queue(req);
 		break;
 	case IO_APOLL_ABORTED:
+		n_apoll_aborted++;
 		io_kbuf_recycle(req, 0);
 		io_queue_iowq(req);
 		break;
 	case IO_APOLL_OK:
+		n_apoll_ok++;
 		break;
 	}
 
@@ -2309,7 +2310,6 @@ static void io_submit_state_start(struct io_submit_state *state,
 static void io_commit_sqring(struct io_ring_ctx *ctx)
 {
 	struct io_rings *rings = ctx->rings;
-	struct io_uring_sqe_node* head = ctx->sq_sqes_list.head;
 
 	/*
 	 * Ensure any loads from the SQEs are done at this point,
@@ -2318,8 +2318,10 @@ static void io_commit_sqring(struct io_ring_ctx *ctx)
 	 */
 
 	if(unlikely(ctx->sq_sqes_list.head != ctx->sq_sqes_list.tail)) {
-		head = head->next;
-		ctx->sq_sqes = head->next->sqe;
+		if(ctx->sq_sqes_list.head->sq.tail == ctx->cached_sq_head) {
+			ctx->sq_sqes_list.head = ctx->sq_sqes_list.head->next;
+			ctx->sq_sqes = ctx->sq_sqes_list.head->sqe;
+		}
 
 		return;
 	}
@@ -2339,6 +2341,7 @@ static bool io_get_sqe(struct io_ring_ctx *ctx, const struct io_uring_sqe **sqe)
 {
 	unsigned mask = ctx->sq_entries - 1;
 	unsigned head = ctx->cached_sq_head++ & mask;
+	const struct io_uring_sqe *current_sqe;
 
 	if (!(ctx->flags & IORING_SETUP_NO_SQARRAY)) {
 		head = READ_ONCE(ctx->sq_array[head]);
@@ -2366,7 +2369,19 @@ static bool io_get_sqe(struct io_ring_ctx *ctx, const struct io_uring_sqe **sqe)
 	/* double index for 128-byte SQEs, twice as long */
 	if (ctx->flags & IORING_SETUP_SQE128)
 		head <<= 1;
-	*sqe = &ctx->sq_sqes[head];
+
+	current_sqe = &ctx->sq_sqes[head];
+	*sqe = current_sqe;
+
+	if (current_sqe->opcode == 0) {
+		printk(KERN_INFO "io_get_sqe: SQE @ %p (index %u):\n", current_sqe, ctx->cached_sq_head - 1);
+		printk(KERN_INFO "  opcode: %u\n", current_sqe->opcode);
+		printk(KERN_INFO "  flags: 0x%x\n", current_sqe->flags);
+		printk(KERN_INFO "  fd: %d\n", current_sqe->fd);
+		printk(KERN_INFO "  addr: %llu\n", current_sqe->addr);
+		printk(KERN_INFO "user data is null");
+	}
+
 	return true;
 }
 
@@ -2399,7 +2414,6 @@ int io_submit_sqes(struct io_ring_ctx *ctx, unsigned int nr)
 	/* make sure SQ entry isn't read before tail */
 	ret = left = min(nr, entries);
 
-	ctx->sq_sqes_list.head->sq.head += left;
 	io_get_task_refs(left);
 	io_submit_state_start(&ctx->submit_state, left);
 
@@ -2413,32 +2427,24 @@ int io_submit_sqes(struct io_ring_ctx *ctx, unsigned int nr)
 			if (io_sqring_full(ctx)) {
 				/*
 				 * this is sq ring saturate point.
-				 */
-			
-				struct io_uring_sqe_node* head = ctx->sq_sqes_list.head;
-				struct io_uring_sqe_node* tail = ctx->sq_sqes_list.tail;
-				
-				/*
 				 * user will submit additional sqes.
 				 * kernel might remember current state of head and tail to process later.
 				 */
-			
-				if (unlikely(tail->next == head)) {
-					io_expand_sq_ring(ctx);
-				} else {
-					io_remap_sq_ring(ctx, tail->next);
-				}
+				
+				u32 tail = smp_load_acquire(&ctx->rings->sq.tail);
 
-				// printk("smp_store_release to %d, head:%d", tail->sq.tail, tail->sq.head);
-				smp_store_release(&ctx->rings->sq.head, smp_load_acquire(&ctx->rings->sq.tail)) ;
+				if (unlikely(ctx->sq_sqes_list.tail->next == ctx->sq_sqes_list.head))
+					io_expand_sq_ring(ctx, tail);
+				else
+					io_remap_sq_ring(ctx, ctx->sq_sqes_list.tail->next, tail);
+		
+				smp_store_release(&ctx->rings->sq.head, tail);
 			}
 		}
 		if (unlikely(!io_alloc_req(ctx, &req))) {
-			printk("fail to io_alloc_req");
 			break;
 		}
 		if (unlikely(!io_get_sqe(ctx, &sqe))) {
-			printk("fait to io_get_sqe");
 			io_req_add_to_cache(req, ctx);
 			break;
 		}
@@ -2456,7 +2462,6 @@ int io_submit_sqes(struct io_ring_ctx *ctx, unsigned int nr)
 	} while (--left);
 
 	if (unlikely(left)) {
-		printk("unlikely(left)");
 		ret -= left;
 		/* try again if it submitted nothing and can't allocate a req */
 		if (!ret && io_req_cache_empty(ctx))
@@ -2678,6 +2683,18 @@ static void *io_sqes_map(struct io_ring_ctx *ctx, unsigned long uaddr,
 			      size);
 }
 
+int n_io_send = 0;
+int n_io_send_eagain_1 = 0;
+int n_io_send_eagain_2 = 0;
+int n_io_send_eagain_3 = 0;
+int n_io_send_enotsock = 0;
+
+int n_io_recv = 0;
+int n_io_recv_eagain_1 = 0;
+int n_io_recv_eagain_2 = 0;
+int n_io_recv_eagain_3 = 0;
+int n_io_recv_enotsock = 0;
+
 static void io_rings_free(struct io_ring_ctx *ctx)
 {
 	printk("nr_list:%d\n", ctx->nr_sq_arr_entries);
@@ -2691,6 +2708,12 @@ static void io_rings_free(struct io_ring_ctx *ctx)
 	printk("audit_uring_exit:%d\n", n_audit_uring_exit);
 	printk("go_final_ret:%d\n", go_final_ret);
 	printk("n_submit_sqe:%d\n", n_submit_sqe);
+	printk("queue async:%d\n", queue_async);
+	printk("req_defer_failed:%d\n", req_defer_failed);
+	printk("ready:%d, aborted:%d, ok:%d\n", n_apoll_ready, n_apoll_aborted, n_apoll_ok);
+	printk("n_req_set_fail:%d\n", n_req_set_fail);
+	printk("io_recv:%d, eagain_1:%d, _2:%d, _3:%d, notsock:%d\n", n_io_recv, n_io_recv_eagain_1, n_io_recv_eagain_2, n_io_recv_eagain_3, n_io_recv_enotsock);
+	printk("io_send:%d, eagain_1:%d, _2:%d, _3:%d, notsock:%d\n", n_io_send, n_io_send_eagain_1, n_io_send_eagain_2, n_io_send_eagain_3, n_io_send_enotsock);
 
 	if (!(ctx->flags & IORING_SETUP_NO_MMAP)) {
 		/*struct io_uring_sqe_node *cur = ctx->sq_sqes_list.tail;
@@ -3491,31 +3514,28 @@ bool io_is_uring_fops(struct file *file)
 	return file->f_op == &io_uring_fops;
 }
 
-int io_remap_sq_ring(struct io_ring_ctx *ctx, struct io_uring_sqe_node* node)
+int io_remap_sq_ring(struct io_ring_ctx *ctx, struct io_uring_sqe_node* node, u32 tail)
 {
 	int ret;
 	struct vm_area_struct *vma = ctx->sqe_vma;
-	struct io_uring_sqe_node* tail = ctx->sq_sqes_list.tail;
+
+	ctx->sq_sqes_list.tail->sq.tail = tail;
 
 	mmap_write_lock(vma->vm_mm);
-
 	zap_page_range_single(vma, vma->vm_start, vma->vm_end - vma->vm_start, NULL);
-
 	ret = io_uring_mmap_pages(ctx, vma, node->sqe_pages, node->n_sqe_pages);	
 
 	if (ret) 
 		pr_err("io_uring_mmap_pages() failed\n");
 
 	flush_tlb_mm_range(vma->vm_mm, vma->vm_start, vma->vm_end, PAGE_SHIFT, false);
-
 	mmap_write_unlock(vma->vm_mm);
-
 	ctx->sq_sqes_list.tail = node;
 
 	return ret;
 }
 
-int io_expand_sq_ring(struct io_ring_ctx *ctx)
+int io_expand_sq_ring(struct io_ring_ctx *ctx, u32 tail)
 {
 	size_t size;
 	void *ptr;
@@ -3539,10 +3559,11 @@ int io_expand_sq_ring(struct io_ring_ctx *ctx)
 	}
 
 	new_node->sqe = ptr;
+	new_node->next = ctx->sq_sqes_list.head;
 	ctx->sq_sqes_list.tail->next = new_node;
 	ctx->nr_sq_arr_entries++;
 
-	ret = io_remap_sq_ring(ctx, new_node);
+	ret = io_remap_sq_ring(ctx, new_node, tail);
 	
 	if (ret) {
 		printk(KERN_ERR "vm_insert_page failed: %d ", ret);

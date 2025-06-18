@@ -21,15 +21,14 @@
 #include "debug.h"
 
 #define IORING_SQPOLL_CAP_ENTRIES_VALUE 8
-#define IORING_TW_CAP_ENTRIES_VALUE	8
+#define IORING_TW_CAP_ENTRIES_VALUE 8
 
 enum {
 	IO_SQ_THREAD_SHOULD_STOP = 0,
 	IO_SQ_THREAD_SHOULD_PARK,
 };
 
-void io_sq_thread_unpark(struct io_sq_data *sqd)
-	__releases(&sqd->lock)
+void io_sq_thread_unpark(struct io_sq_data *sqd) __releases(&sqd->lock)
 {
 	WARN_ON_ONCE(sqd->thread == current);
 
@@ -43,8 +42,7 @@ void io_sq_thread_unpark(struct io_sq_data *sqd)
 	mutex_unlock(&sqd->lock);
 }
 
-void io_sq_thread_park(struct io_sq_data *sqd)
-	__acquires(&sqd->lock)
+void io_sq_thread_park(struct io_sq_data *sqd) __acquires(&sqd->lock)
 {
 	WARN_ON_ONCE(sqd->thread == current);
 
@@ -130,17 +128,6 @@ static struct io_sq_data *io_attach_sq_data(struct io_uring_params *p)
 		return ERR_PTR(-EPERM);
 	}
 
-void io_sq_thread_park(struct io_sq_data *sqd)
-	__acquires(&sqd->lock)
-{
-	WARN_ON_ONCE(sqd->thread == current);
-
-	atomic_inc(&sqd->park_pending);
-	set_bit(IO_SQ_THREAD_SHOULD_PARK, &sqd->state);
-	mutex_lock(&sqd->lock);
-	if (sqd->thread)
-		wake_up_process(sqd->thread);
-}
 	refcount_inc(&sqd->refs);
 	fdput(f);
 	return sqd;
@@ -252,7 +239,8 @@ static unsigned int io_sq_tw(struct llist_node **retry_list, int max_entries)
 	unsigned int count = 0;
 
 	if (*retry_list) {
-		*retry_list = io_handle_tw_list(*retry_list, &count, max_entries);
+		*retry_list =
+			io_handle_tw_list(*retry_list, &count, max_entries);
 		if (count >= max_entries)
 			goto out;
 		max_entries -= count;
@@ -332,7 +320,8 @@ static int io_sq_thread(void *data)
 		list_for_each_entry(ctx, &sqd->ctx_list, sqd_list) {
 			int ret = __io_sq_thread(ctx, cap_entries);
 
-			if (!sqt_spin && (ret > 0 || !wq_list_empty(&ctx->iopoll_list)))
+			if (!sqt_spin &&
+			    (ret > 0 || !wq_list_empty(&ctx->iopoll_list)))
 				sqt_spin = true;
 		}
 		if (io_sq_tw(&retry_list, IORING_TW_CAP_ENTRIES_VALUE))
@@ -353,12 +342,13 @@ static int io_sq_thread(void *data)
 		}
 
 		prepare_to_wait(&sqd->wait, &wait, TASK_INTERRUPTIBLE);
-		if (!io_sqd_events_pending(sqd) && !io_sq_tw_pending(retry_list)) {
+		if (!io_sqd_events_pending(sqd) &&
+		    !io_sq_tw_pending(retry_list)) {
 			bool needs_sched = true;
 
 			list_for_each_entry(ctx, &sqd->ctx_list, sqd_list) {
 				atomic_or(IORING_SQ_NEED_WAKEUP,
-						&ctx->rings->sq_flags);
+					  &ctx->rings->sq_flags);
 				if ((ctx->flags & IORING_SETUP_IOPOLL) &&
 				    !wq_list_empty(&ctx->iopoll_list)) {
 					needs_sched = false;
@@ -385,7 +375,7 @@ static int io_sq_thread(void *data)
 			}
 			list_for_each_entry(ctx, &sqd->ctx_list, sqd_list)
 				atomic_andnot(IORING_SQ_NEED_WAKEUP,
-						&ctx->rings->sq_flags);
+					      &ctx->rings->sq_flags);
 		}
 
 		finish_wait(&sqd->wait, &wait);
@@ -433,7 +423,7 @@ __cold int io_sq_offload_create(struct io_ring_ctx *ctx,
 
 	/* Retain compatibility with failing for an invalid attach attempt */
 	if ((ctx->flags & (IORING_SETUP_ATTACH_WQ | IORING_SETUP_SQPOLL)) ==
-				IORING_SETUP_ATTACH_WQ) {
+	    IORING_SETUP_ATTACH_WQ) {
 		struct fd f;
 
 		f = fdget(p->wq_fd);
@@ -447,7 +437,7 @@ __cold int io_sq_offload_create(struct io_ring_ctx *ctx,
 	}
 	if (ctx->flags & IORING_SETUP_SQPOLL) {
 		PRINTK("io_sq_offload_create: SQPOLL flags is set,\n");
-		
+
 		struct task_struct *tsk;
 		struct io_sq_data *sqd;
 		bool attached;
@@ -488,7 +478,6 @@ __cold int io_sq_offload_create(struct io_ring_ctx *ctx,
 				goto err_sqpoll;
 			sqd->sq_cpu = cpu;
 		} else {
-
 			sqd->sq_cpu = -1;
 		}
 
