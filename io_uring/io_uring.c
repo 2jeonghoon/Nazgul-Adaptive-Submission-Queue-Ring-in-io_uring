@@ -922,13 +922,9 @@ bool io_req_post_cqe(struct io_kiocb *req, s32 res, u32 cflags)
 	return posted;
 }
 
-static int complete_post = 0;
-
 static void io_req_complete_post(struct io_kiocb *req, unsigned issue_flags)
 {
 	struct io_ring_ctx *ctx = req->ctx;
-
-	complete_post++;
 
 	/*
 	 * All execution paths but io-wq use the deferred completions by
@@ -961,12 +957,9 @@ static void io_req_complete_post(struct io_kiocb *req, unsigned issue_flags)
 	req_ref_put(req);
 }
 
-static int req_defer_failed = 0;
-
 void io_req_defer_failed(struct io_kiocb *req, s32 res)
 	__must_hold(&ctx->uring_lock)
 {
-	req_defer_failed++;
 	const struct io_cold_def *def = &io_cold_defs[req->opcode];
 
 	lockdep_assert_held(&req->ctx->uring_lock);
@@ -1751,19 +1744,11 @@ static bool io_assign_file(struct io_kiocb *req, const struct io_issue_def *def,
 	return !!req->file;
 }
 
-static int issue_sqe = 0;
-static int issue_complete = 0;
-static int n_audit_uring_entry = 0;
-static int n_audit_uring_exit = 0;
-static int go_final_ret = 0;
-
 static int io_issue_sqe(struct io_kiocb *req, unsigned int issue_flags)
 {
 	const struct io_issue_def *def = &io_issue_defs[req->opcode];
 	const struct cred *creds = NULL;
 	int ret;
-
-	issue_sqe++;
 
 	if (unlikely(!io_assign_file(req, def, issue_flags))) {
 		printk("!io_assign_file");
@@ -1774,17 +1759,13 @@ static int io_issue_sqe(struct io_kiocb *req, unsigned int issue_flags)
 		     req->creds != current_cred()))
 		creds = override_creds(req->creds);
 
-	if (!def->audit_skip) {
-		n_audit_uring_entry++;
+	if (!def->audit_skip)
 		audit_uring_entry(req->opcode);
-	}
 	
 	ret = def->issue(req, issue_flags);
 
-	if (!def->audit_skip) {
-		n_audit_uring_exit++;
+	if (!def->audit_skip)
 		audit_uring_exit(!ret, ret);
-	}
 
 	if (creds)
 		revert_creds(creds);
@@ -1799,7 +1780,6 @@ static int io_issue_sqe(struct io_kiocb *req, unsigned int issue_flags)
 	}
 
 	if (ret == IOU_ISSUE_SKIP_COMPLETE) {
-		issue_complete++;
 		ret = 0;
 		io_arm_ltimeout(req);
 
@@ -1808,7 +1788,6 @@ static int io_issue_sqe(struct io_kiocb *req, unsigned int issue_flags)
 		    def->iopoll_queue)
 			io_iopoll_req_issued(req, issue_flags);
 	}
-	go_final_ret++;
 
 	return ret;
 }
@@ -1968,17 +1947,10 @@ struct file *io_file_get_normal(struct io_kiocb *req, int fd)
 	return file;
 }
 
-static int queue_async = 0;
-static int n_apoll_ready = 0;
-static int n_apoll_aborted = 0;
-static int n_apoll_ok = 0;
-
 static void io_queue_async(struct io_kiocb *req, int ret)
 	__must_hold(&req->ctx->uring_lock)
 {
 	struct io_kiocb *linked_timeout;
-
-	queue_async++;
 
 	if (ret != -EAGAIN || (req->flags & REQ_F_NOWAIT)) {
 		io_req_defer_failed(req, ret);
@@ -1989,17 +1961,14 @@ static void io_queue_async(struct io_kiocb *req, int ret)
 
 	switch (io_arm_poll_handler(req, 0)) {
 	case IO_APOLL_READY:
-		n_apoll_ready++;
 		io_kbuf_recycle(req, 0);
 		io_req_task_queue(req);
 		break;
 	case IO_APOLL_ABORTED:
-		n_apoll_aborted++;
 		io_kbuf_recycle(req, 0);
 		io_queue_iowq(req);
 		break;
 	case IO_APOLL_OK:
-		n_apoll_ok++;
 		break;
 	}
 
@@ -2007,14 +1976,11 @@ static void io_queue_async(struct io_kiocb *req, int ret)
 		io_queue_linked_timeout(linked_timeout);
 }
 
-static int issue = 0;
-
 static inline void io_queue_sqe(struct io_kiocb *req)
 	__must_hold(&req->ctx->uring_lock)
 {
 	int ret;
 
-	issue++;
 	ret = io_issue_sqe(req,
 			   IO_URING_F_NONBLOCK | IO_URING_F_COMPLETE_DEFER);
 
@@ -2390,8 +2356,6 @@ typedef struct conn_info {
 	unsigned type;
 } conn_info;
 
-static int n_submit_sqe = 0;
-
 int io_submit_sqes(struct io_ring_ctx *ctx, unsigned int nr)
 	__must_hold(&ctx->uring_lock)
 {
@@ -2458,7 +2422,6 @@ int io_submit_sqes(struct io_ring_ctx *ctx, unsigned int nr)
 			left--;
 			break;
 		}
-		n_submit_sqe++;
 	} while (--left);
 
 	if (unlikely(left)) {
@@ -2683,38 +2646,8 @@ static void *io_sqes_map(struct io_ring_ctx *ctx, unsigned long uaddr,
 			      size);
 }
 
-int n_io_send = 0;
-int n_io_send_eagain_1 = 0;
-int n_io_send_eagain_2 = 0;
-int n_io_send_eagain_3 = 0;
-int n_io_send_enotsock = 0;
-
-int n_io_recv = 0;
-int n_io_recv_eagain_1 = 0;
-int n_io_recv_eagain_2 = 0;
-int n_io_recv_eagain_3 = 0;
-int n_io_recv_enotsock = 0;
-
 static void io_rings_free(struct io_ring_ctx *ctx)
 {
-	printk("nr_list:%d\n", ctx->nr_sq_arr_entries);
-	printk("completion:%d\n", completion);
-	printk("issue:%d\n", issue);
-	printk("complete_post:%d\n", complete_post);
-	printk("issue_sqe:%d\n", issue_sqe);
-	printk("issue_complete:%d\n", issue_complete);
-	printk("req_complete_defer:%d\n", req_complete_defer);
-	printk("audit_uring_entry:%d\n", n_audit_uring_entry);
-	printk("audit_uring_exit:%d\n", n_audit_uring_exit);
-	printk("go_final_ret:%d\n", go_final_ret);
-	printk("n_submit_sqe:%d\n", n_submit_sqe);
-	printk("queue async:%d\n", queue_async);
-	printk("req_defer_failed:%d\n", req_defer_failed);
-	printk("ready:%d, aborted:%d, ok:%d\n", n_apoll_ready, n_apoll_aborted, n_apoll_ok);
-	printk("n_req_set_fail:%d\n", n_req_set_fail);
-	printk("io_recv:%d, eagain_1:%d, _2:%d, _3:%d, notsock:%d\n", n_io_recv, n_io_recv_eagain_1, n_io_recv_eagain_2, n_io_recv_eagain_3, n_io_recv_enotsock);
-	printk("io_send:%d, eagain_1:%d, _2:%d, _3:%d, notsock:%d\n", n_io_send, n_io_send_eagain_1, n_io_send_eagain_2, n_io_send_eagain_3, n_io_send_enotsock);
-
 	if (!(ctx->flags & IORING_SETUP_NO_MMAP)) {
 		/*struct io_uring_sqe_node *cur = ctx->sq_sqes_list.tail;
 		while (cur->sqe != ctx->first_sq_sqes) {
