@@ -2648,24 +2648,12 @@ static void *io_sqes_map(struct io_ring_ctx *ctx, unsigned long uaddr,
 
 static void io_rings_free(struct io_ring_ctx *ctx)
 {
-	if (!(ctx->flags & IORING_SETUP_NO_MMAP)) {
-		/*struct io_uring_sqe_node *cur = ctx->sq_sqes_list.tail;
-		while (cur->sqe != ctx->first_sq_sqes) {
-			cur = cur->next;
-
-			if (cur == ctx->sq_sqes_list.tail) {
-				printk("rings free err\n");
-				break;
-			}
-		}
-
-		io_remap_sq_ring(ctx, cur);*/
-
-		io_pages_unmap(ctx->rings, &ctx->ring_pages, &ctx->n_ring_pages,
+		printk("nr_list:%d\n", ctx->nr_sq_arr_entries);
+		if (!(ctx->flags & IORING_SETUP_NO_MMAP)) {
+	
+				io_pages_unmap(ctx->rings, &ctx->ring_pages, &ctx->n_ring_pages,
 			       true);
-
-		// io_pages_unmap(ctx->sq_sqes, &cur->sqe_pages, &cur->n_sqe_pages, true);
-		io_pages_unmap(ctx->sq_sqes, &ctx->sq_sqes_list.tail->sqe_pages, &ctx->sq_sqes_list.tail->n_sqe_pages, true);
+				io_pages_unmap(ctx->sq_sqes, &ctx->sq_sqes_list.tail->sqe_pages, &ctx->sq_sqes_list.tail->n_sqe_pages, true);
 
 
 
@@ -2683,6 +2671,7 @@ static void io_rings_free(struct io_ring_ctx *ctx)
 }
 
 static unsigned long rings_size(struct io_ring_ctx *ctx,
+
 				unsigned int sq_entries,
 				unsigned int cq_entries, size_t *sq_offset)
 {
@@ -3495,6 +3484,8 @@ int io_expand_sq_ring(struct io_ring_ctx *ctx, u32 tail)
 	new_node->next = ctx->sq_sqes_list.head;
 	ctx->sq_sqes_list.tail->next = new_node;
 	ctx->nr_sq_arr_entries++;
+	
+	printk("do expand: nr_sq_arr_entries(%d)", ctx->nr_sq_arr_entries);
 
 	ret = io_remap_sq_ring(ctx, new_node, tail);
 	
