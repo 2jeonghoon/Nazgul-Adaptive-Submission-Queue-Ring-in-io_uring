@@ -2349,11 +2349,6 @@ static bool io_get_sqe(struct io_ring_ctx *ctx, const struct io_uring_sqe **sqe)
 	return true;
 }
 
-typedef struct conn_info {
-	unsigned fd;
-	unsigned type;
-} conn_info;
-
 int io_submit_sqes(struct io_ring_ctx *ctx, unsigned int nr)
 	__must_hold(&ctx->uring_lock)
 {
