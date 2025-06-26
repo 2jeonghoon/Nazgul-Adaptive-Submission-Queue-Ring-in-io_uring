@@ -1914,7 +1914,6 @@ fail:
 inline struct file *io_file_get_fixed(struct io_kiocb *req, int fd,
 				      unsigned int issue_flags)
 {
-	printk("io_file_get_fixed");
 	struct io_ring_ctx *ctx = req->ctx;
 	struct io_fixed_file *slot;
 	struct file *file = NULL;
@@ -1930,7 +1929,6 @@ inline struct file *io_file_get_fixed(struct io_kiocb *req, int fd,
 	req->flags |= io_slot_flags(slot);
 	file = io_slot_file(slot);
 out:
-	printk("io_file_get_fixed go out");
 	io_ring_submit_unlock(ctx, issue_flags);
 	return file;
 }
@@ -2321,7 +2319,7 @@ static bool io_get_sqe(struct io_ring_ctx *ctx, const struct io_uring_sqe **sqe)
 			return false;
 		}
 	}
-	// printk("head(%d) is changed to %d", tmp, head);
+	// nrintk("head(%d) is changed to %d", tmp, head);
 
 	/*
 	 * The cached sq head (or cq tail) serves two purposes:
