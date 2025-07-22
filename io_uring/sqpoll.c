@@ -272,6 +272,8 @@ static void io_sq_update_worktime(struct io_sq_data *sqd, struct rusage *start)
 
 static int io_sq_thread(void *data)
 {
+	ktime_t start_ns, end_ns;	
+	s64 delta_ns;
 	struct llist_node *retry_list = NULL;
 	struct io_sq_data *sqd = data;
 	struct io_ring_ctx *ctx;
@@ -279,6 +281,8 @@ static int io_sq_thread(void *data)
 	unsigned long timeout = 0;
 	char buf[TASK_COMM_LEN];
 	DEFINE_WAIT(wait);
+
+	start_ns = ktime_get();
 
 	/* offload context creation failed, just exit */
 	if (!current->io_uring)
@@ -391,6 +395,11 @@ static int io_sq_thread(void *data)
 		atomic_or(IORING_SQ_NEED_WAKEUP, &ctx->rings->sq_flags);
 	io_run_task_work();
 	mutex_unlock(&sqd->lock);
+
+	end_ns = ktime_get();
+	delta_ns = ktime_to_ns(ktime_sub(end_ns, start_ns));
+
+	printk("%d sq_thread execution time:%lld ns", current->pid, delta_ns);
 err_out:
 	complete(&sqd->exited);
 	do_exit(0);

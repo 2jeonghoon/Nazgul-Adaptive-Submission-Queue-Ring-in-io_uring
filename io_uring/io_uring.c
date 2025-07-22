@@ -2355,18 +2355,12 @@ int io_submit_sqes(struct io_ring_ctx *ctx, unsigned int nr)
 	unsigned int entries = io_sqring_entries(ctx);
 	unsigned int left;
 	int ret;
-		/*
+	/*
 	 *	entries is the item that needs to be processed now
 	 */
 
 	if (unlikely(!entries))
 		return 0;
-
-	int check_interval = ctx->sq_entries / (ctx->nr_sq_arr_entries * 4);
-	int count = check_interval - 1;
-
-	if (check_interval == 0)
-		check_interval = 1;
 
 	/* make sure SQ entry isn't read before tail */
 	ret = left = min(nr, entries);
@@ -2378,32 +2372,28 @@ int io_submit_sqes(struct io_ring_ctx *ctx, unsigned int nr)
 		const struct io_uring_sqe *sqe;
 		struct io_kiocb *req;
 	
-		if (unlikely(++count == check_interval)) {
-			count = 0;
-
-			if (io_sqring_full(ctx)) {
+		if (io_sqring_full(ctx)) {
 				/*
 				 * this is sq ring saturate point.
 				 * user will submit additional sqes.
 				 * kernel might remember current state of head and tail to process later.
 				 */
-				
+
 				u32 tail = smp_load_acquire(&ctx->rings->sq.tail);
 
 				if (unlikely(ctx->sq_sqes_list.tail->next == ctx->sq_sqes_list.head))
-					io_expand_sq_ring(ctx, tail);
+						io_expand_sq_ring(ctx, tail);
 				else
-					io_remap_sq_ring(ctx, ctx->sq_sqes_list.tail->next, tail);
-		
+						io_remap_sq_ring(ctx, ctx->sq_sqes_list.tail->next, tail);
+
 				smp_store_release(&ctx->rings->sq.head, tail);
-			}
 		}
 		if (unlikely(!io_alloc_req(ctx, &req))) {
-			break;
+				break;
 		}
 		if (unlikely(!io_get_sqe(ctx, &sqe))) {
-			io_req_add_to_cache(req, ctx);
-			break;
+				io_req_add_to_cache(req, ctx);
+				break;
 		}
 
 		/*
@@ -2411,9 +2401,9 @@ int io_submit_sqes(struct io_ring_ctx *ctx, unsigned int nr)
 		 * ring was setup with IORING_SETUP_SUBMIT_ALL
 		 */
 		if (unlikely(io_submit_sqe(ctx, req, sqe)) &&
-		    !(ctx->flags & IORING_SETUP_SUBMIT_ALL)) {
-			left--;
-			break;
+						!(ctx->flags & IORING_SETUP_SUBMIT_ALL)) {
+				left--;
+				break;
 		}
 	} while (--left);
 
@@ -2639,17 +2629,20 @@ static void *io_sqes_map(struct io_ring_ctx *ctx, unsigned long uaddr,
 			      size);
 }
 
+static s64 sum_remap_ns = 0;
+static s64 sum_expand_ns = 0;
+static int nr_remap_cnt = 0;
+
 static void io_rings_free(struct io_ring_ctx *ctx)
 {
-		printk("nr_list:%d\n", ctx->nr_sq_arr_entries);
-		if (!(ctx->flags & IORING_SETUP_NO_MMAP)) {
-	
-				io_pages_unmap(ctx->rings, &ctx->ring_pages, &ctx->n_ring_pages,
-			       true);
+	printk("nr_list:%d\n", ctx->nr_sq_arr_entries);
+	printk("remapping execution sum time:%lld\n", sum_remap_ns);
+	printk("expand execution sum time:%lld\n", sum_expand_ns);
+	printk("nr_remap_cnt:%d\n", nr_remap_cnt);
+
+	if (!(ctx->flags & IORING_SETUP_NO_MMAP)) {	
+				io_pages_unmap(ctx->rings, &ctx->ring_pages, &ctx->n_ring_pages, true);
 				io_pages_unmap(ctx->sq_sqes, &ctx->sq_sqes_list.tail->sqe_pages, &ctx->sq_sqes_list.tail->n_sqe_pages, true);
-
-
-
 	} else {
 		io_pages_free(&ctx->ring_pages, ctx->n_ring_pages);
 		ctx->n_ring_pages = 0;
@@ -3431,8 +3424,11 @@ bool io_is_uring_fops(struct file *file)
 
 int io_remap_sq_ring(struct io_ring_ctx *ctx, struct io_uring_sqe_node* node, u32 tail)
 {
+	ktime_t start, end;
 	int ret;
 	struct vm_area_struct *vma = ctx->sqe_vma;
+
+	start = ktime_get();
 
 	ctx->sq_sqes_list.tail->sq.tail = tail;
 
@@ -3447,16 +3443,24 @@ int io_remap_sq_ring(struct io_ring_ctx *ctx, struct io_uring_sqe_node* node, u3
 	mmap_write_unlock(vma->vm_mm);
 	ctx->sq_sqes_list.tail = node;
 
+	end = ktime_get();
+
+	sum_remap_ns += ktime_to_ns(ktime_sub(end, start));
+	nr_remap_cnt++;
+
 	return ret;
 }
 
 int io_expand_sq_ring(struct io_ring_ctx *ctx, u32 tail)
 {
+	ktime_t start, end;
 	size_t size;
 	void *ptr;
 	int ret;
 	struct io_uring_sqe_node* new_node;
 	gfp_t gfp = GFP_KERNEL_ACCOUNT | __GFP_ZERO | __GFP_NOWARN;
+
+	start = ktime_get();
 
 	size = array_size(sizeof(struct io_uring_sqe), ctx->sq_entries);
 	if (!size) return -EOVERFLOW;
@@ -3478,6 +3482,9 @@ int io_expand_sq_ring(struct io_ring_ctx *ctx, u32 tail)
 	ctx->sq_sqes_list.tail->next = new_node;
 	ctx->nr_sq_arr_entries++;
 	
+	end = ktime_get();
+	sum_expand_ns = ktime_to_ns(ktime_sub(end, start));
+
 	printk("do expand: nr_sq_arr_entries(%d)", ctx->nr_sq_arr_entries);
 
 	ret = io_remap_sq_ring(ctx, new_node, tail);
