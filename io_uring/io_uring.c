@@ -1092,6 +1092,7 @@ struct llist_node *io_handle_tw_list(struct llist_node *node,
 			mutex_lock(&ctx->uring_lock);
 			percpu_ref_get(&ctx->refs);
 		}
+
 		INDIRECT_CALL_2(req->io_task_work.func, io_poll_task_func,
 				io_req_rw_complete, req, &ts);
 		node = next;
@@ -2349,6 +2350,33 @@ static bool io_get_sqe(struct io_ring_ctx *ctx, const struct io_uring_sqe **sqe)
 	return true;
 }
 
+void nazgul_func(struct io_ring_ctx *ctx) 
+{
+	int remain = READ_ONCE(ctx->rings->sq.tail) - READ_ONCE(ctx->rings->sq.head);
+
+	if (remain == 0) {
+		/*
+		 * this is sq ring saturate point.
+		 * user will submit additional sqes.
+		 * kernel might remember current state of head and tail to process later.
+		 */
+	
+		u32 tail = smp_load_acquire(&ctx->rings->sq.tail);
+
+		if (unlikely(ctx->sq_sqes_list.tail->next == ctx->sq_sqes_list.head))
+			io_ensure_sq_expanded_and_remap(ctx, tail);
+		else
+			io_remap_sq_ring(ctx, ctx->sq_sqes_list.tail->next, tail);
+
+		smp_store_release(&ctx->rings->sq.head, tail);
+	} else if (remain < ctx->sq_entries / 10) {
+		if (unlikely(ctx->sq_sqes_list.tail->next == ctx->sq_sqes_list.head)) {
+			u32 tail = smp_load_acquire(&ctx->rings->sq.tail);
+			io_expand_sq_ring(ctx, tail);	
+		}
+	}	
+}
+
 int io_submit_sqes(struct io_ring_ctx *ctx, unsigned int nr)
 	__must_hold(&ctx->uring_lock)
 {
@@ -2371,23 +2399,9 @@ int io_submit_sqes(struct io_ring_ctx *ctx, unsigned int nr)
 	do {
 		const struct io_uring_sqe *sqe;
 		struct io_kiocb *req;
-	
-		if (io_sqring_full(ctx)) {
-				/*
-				 * this is sq ring saturate point.
-				 * user will submit additional sqes.
-				 * kernel might remember current state of head and tail to process later.
-				 */
+		
+		nazgul_func(ctx);
 
-				u32 tail = smp_load_acquire(&ctx->rings->sq.tail);
-
-				if (unlikely(ctx->sq_sqes_list.tail->next == ctx->sq_sqes_list.head))
-						io_expand_sq_ring(ctx, tail);
-				else
-						io_remap_sq_ring(ctx, ctx->sq_sqes_list.tail->next, tail);
-
-				smp_store_release(&ctx->rings->sq.head, tail);
-		}
 		if (unlikely(!io_alloc_req(ctx, &req))) {
 				break;
 		}
@@ -3451,12 +3465,102 @@ int io_remap_sq_ring(struct io_ring_ctx *ctx, struct io_uring_sqe_node* node, u3
 	return ret;
 }
 
+int io_ensure_sq_expanded_and_remap(struct io_ring_ctx *ctx, u32 tail)
+{
+	// 1. 확장 작업이 진행 중인지 확인 (락 필요)
+	spin_lock(&ctx->lock);
+	bool pending = ctx->sq_expand_pending;
+	spin_unlock(&ctx->lock);
+					    
+	if (pending) {
+			// 2. 비동기 작업이 끝날 때까지 동기적으로 대기
+			// 재매핑은 확장이 끝난 후 반드시 수행되어야 하므로 wait_for_completion 호출.
+			wait_for_completion(&ctx->sq_expand_done);
+										        
+			printk("Expand operation forced synchronous wait completed.\n");
+	}
+						    
+	// 3. 확장 완료가 보장된 상태에서 재매핑 수행
+	// (io_expand_sq_ring_do_work에서 new_node 정보를 ctx에 저장했다고 가정)
+	// NOTE: new_node에 대한 접근을 ctx->lock으로 보호해야 합니다.
+	// 예: io_remap_sq_ring(ctx, ctx->last_expanded_node, tail);
+						    
+	int ret = io_remap_sq_ring(ctx, ctx->sq_sqes_list.tail->next, tail);
+
+	return ret;
+}
+
+static void io_expand_sq_ring_worker(struct work_struct *__work)
+{
+		// work_struct에서 커스텀 구조체 포인터를 얻어옵니다.
+		struct io_ring_expand_work *expand_work = 
+				container_of(__work, struct io_ring_expand_work, work);
+
+		struct io_ring_ctx *ctx = expand_work->ctx;
+		u32 tail = expand_work->tail;
+
+		int ret;
+
+		// NOTE: 여기서 원래 io_expand_sq_ring 함수의 핵심 로직을 실행합니다.
+		// 기존 io_expand_sq_ring 함수의 내용을 그대로 복사하거나, 
+		// 로직을 별도의 헬퍼 함수로 분리하여 호출합니다.
+		// 예시: 로직을 io_expand_sq_ring_do_work(ctx, tail) 함수로 분리했다고 가정.
+		ret = io_expand_sq_ring_do_work(ctx, tail); 
+
+
+		// 1. 작업 완료 신호 (락 필요)
+		spin_lock(&ctx->lock);
+		// 작업 완료 후 플래그를 false로 설정
+		ctx->sq_expand_pending = false; 
+		// 대기 중인 모든 스레드에게 작업이 완료되었음을 알림
+		complete_all(&ctx->sq_expand_done); 
+		spin_unlock(&ctx->lock);
+
+		if (ret) {
+				// 확장 실패 처리 로직 (필요하다면 사용자에게 알림 등)
+				pr_err("io_expand_sq_ring failed in worker: %d\n", ret);
+		}
+
+		// 작업 완료 후 동적 할당된 구조체 해제
+
+		kfree(expand_work); 
+
+		// NOTE: 링 확장이 완료되었음을 알리는 추가적인 신호/동기화 로직이 필요할 수 있습니다.
+		// (예: completion 사용, 또는 ctx에 작업 상태 업데이트)
+}
+
 int io_expand_sq_ring(struct io_ring_ctx *ctx, u32 tail)
+{
+		struct io_ring_expand_work *expand_work;
+
+		// 1. 작업 구조체 동적 할당
+		expand_work = kmalloc(sizeof(*expand_work), GFP_KERNEL);
+		if (!expand_work) return -ENOMEM;
+		
+		// 2. 구조체 필드 초기화
+		INIT_WORK(&expand_work->work, io_expand_sq_ring_worker);
+		expand_work->ctx = ctx;
+		expand_work->tail = tail;
+
+		// 3. 워크 스레드 풀에 작업 스케줄링 (system_wq 사용)
+		if (!schedule_work(&expand_work->work)) {
+				// 스케줄링 실패 처리
+				kfree(expand_work);
+				return -EBUSY; // 또는 적절한 오류 코드
+		}
+									    
+		// NOTE: 워커 스레드에서 비동기적으로 작업이 수행되므로,
+		// 이 함수는 즉시 0 (성공적으로 스케줄링됨)을 반환해야 합니다.
+		// 실제 확장이 완료될 때까지 기다리지 않습니다.
+		return 0; 
+}
+
+int io_expand_sq_ring_do_work(struct io_ring_ctx *ctx, u32 tail)
 {
 	ktime_t start, end;
 	size_t size;
-	void *ptr;
 	int ret;
+	void *ptr;
 	struct io_uring_sqe_node* new_node;
 	gfp_t gfp = GFP_KERNEL_ACCOUNT | __GFP_ZERO | __GFP_NOWARN;
 
@@ -3487,14 +3591,14 @@ int io_expand_sq_ring(struct io_ring_ctx *ctx, u32 tail)
 
 	printk("do expand: nr_sq_arr_entries(%d)", ctx->nr_sq_arr_entries);
 
-	ret = io_remap_sq_ring(ctx, new_node, tail);
+	//ret = io_remap_sq_ring(ctx, new_node, tail);
 	
-	if (ret) {
-		printk(KERN_ERR "vm_insert_page failed: %d ", ret);
-		return ret;
-	}
+	//if (ret) {
+	//	printk(KERN_ERR "vm_insert_page failed: %d ", ret);
+	//	return ret;
+	//}
 		
-	return ret;
+	return 0;
 }
 
 static __cold int io_allocate_scq_urings(struct io_ring_ctx *ctx,

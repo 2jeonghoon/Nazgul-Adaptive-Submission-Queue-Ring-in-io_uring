@@ -98,7 +98,9 @@ int io_ring_add_registered_file(struct io_uring_task *tctx, struct file *file,
 int io_poll_issue(struct io_kiocb *req, struct io_tw_state *ts);
 int io_submit_sqes(struct io_ring_ctx *ctx, unsigned int nr);
 int io_remap_sq_ring(struct io_ring_ctx *ctx, struct io_uring_sqe_node* new_node, u32 tail);
+int io_ensure_sq_expanded_and_remap(struct io_ring_ctx *ctx, u32 tail);
 int io_expand_sq_ring(struct io_ring_ctx *ctx, u32 tail);
+int io_expand_sq_ring_do_work(struct io_ring_ctx *ctx, u32 tail);
 int io_do_iopoll(struct io_ring_ctx *ctx, bool force_nonspin);
 void __io_submit_flush_completions(struct io_ring_ctx *ctx);
 
@@ -109,6 +111,7 @@ void io_free_req(struct io_kiocb *req);
 void io_queue_next(struct io_kiocb *req);
 void io_task_refs_refill(struct io_uring_task *tctx);
 bool __io_alloc_req_refill(struct io_ring_ctx *ctx);
+void nazgul_func(struct io_ring_ctx *ctx);
 
 bool io_match_task_safe(struct io_kiocb *head, struct task_struct *task,
 			bool cancel_all);

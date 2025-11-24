@@ -118,6 +118,11 @@ struct io_uring_sqe_list {
 	struct io_uring_sqe_node *tail;
 };
 
+struct io_ring_expand_work {
+		struct work_struct work;  // 워커 스레드 시스템의 기본 구조체
+		struct io_ring_ctx *ctx;  // io_ring_ctx 컨텍스트 포인터
+		u32 tail;                 // io_expand_sq_ring에 전달된 tail 값
+};
 
 /*
  * This data is shared with the application through the mmap at offsets
@@ -297,7 +302,9 @@ struct io_ring_ctx {
 	struct io_uring_sqe_list sq_sqes_list;
 	unsigned nr_sq_arr_entries; 
 	struct vm_area_struct *sqe_vma;
-
+	struct completion sq_expand_done; // 확장 작업이 완료되었음을 알리는 구조체
+	bool sq_expand_pending;           // 확장 작업이 비동기적으로 진행 중인지 확인하는 플래그
+	spinlock_t lock;                  // ctx 보호를 위한 락 (선택 사항이지만 안전을 위해 필요)
 };
 
 struct io_tw_state {};

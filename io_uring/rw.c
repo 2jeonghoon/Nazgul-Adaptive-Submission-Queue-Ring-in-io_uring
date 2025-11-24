@@ -1124,7 +1124,7 @@ int io_do_iopoll(struct io_ring_ctx *ctx, bool force_nonspin)
 		struct io_kiocb *req = container_of(pos, struct io_kiocb, comp_list);
 		struct file *file = req->file;
 		int ret;
-
+		
 		/*
 		 * Move completed and retryable entries to our local lists.
 		 * If we find a request that requires polling, break out
