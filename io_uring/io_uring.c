@@ -2352,7 +2352,7 @@ static bool io_get_sqe(struct io_ring_ctx *ctx, const struct io_uring_sqe **sqe)
 
 void nazgul_func(struct io_ring_ctx *ctx) 
 {
-	int remain = READ_ONCE(ctx->rings->sq.tail) - READ_ONCE(ctx->rings->sq.head);
+	int occupancy_ratio = (READ_ONCE(ctx->rings->sq.tail) - READ_ONCE(ctx->rings->sq.head)) / ctx->sq_entries;
 
 	if (remain == 0) {
 		/*
@@ -2369,18 +2369,17 @@ void nazgul_func(struct io_ring_ctx *ctx)
 			io_remap_sq_ring(ctx, ctx->sq_sqes_list.tail->next, tail);
 
 		smp_store_release(&ctx->rings->sq.head, tail);
-	} else if (remain < ctx->sq_entries / 10) {
-		if (unlikely(ctx->sq_sqes_list.tail->next == ctx->sq_sqes_list.head)) {
-			u32 tail = smp_load_acquire(&ctx->rings->sq.tail);
-			io_expand_sq_ring(ctx, tail);	
-		}
-	}	
+	} else if (unlikely(ctx->sq_sqes_list.tail->next == ctx->sq_sqes_list.head)) {
+		u32 tail = smp_load_acquire(&ctx->rings->sq.tail);
+		io_expand_sq_ring(ctx, tail);
+	}
 }
 
 int io_submit_sqes(struct io_ring_ctx *ctx, unsigned int nr)
 	__must_hold(&ctx->uring_lock)
 {
-	unsigned int entries = io_sqring_entries(ctx);
+	unsigned int entries = io_sqring_entries(
+					ctx);
 	unsigned int left;
 	int ret;
 	/*
@@ -3479,12 +3478,18 @@ int io_ensure_sq_expanded_and_remap(struct io_ring_ctx *ctx, u32 tail)
 										        
 			printk("Expand operation forced synchronous wait completed.\n");
 	}
+   
+	if (unlikely(ctx->sq_sqes_list.tail->next == ctx->sq_sqes_list.head)) {
+		 io_expand_sq_ring_do_work(ctx, tail);
+	}
 						    
 	// 3. 확장 완료가 보장된 상태에서 재매핑 수행
 	// (io_expand_sq_ring_do_work에서 new_node 정보를 ctx에 저장했다고 가정)
 	// NOTE: new_node에 대한 접근을 ctx->lock으로 보호해야 합니다.
 	// 예: io_remap_sq_ring(ctx, ctx->last_expanded_node, tail);
-						    
+	
+
+	// 만약 사전 확장이 감지되지 않은 상태로 이 루프에 들어온 경우에 대한 예외처리도 진행해야 함	
 	int ret = io_remap_sq_ring(ctx, ctx->sq_sqes_list.tail->next, tail);
 
 	return ret;
