@@ -2352,9 +2352,9 @@ static bool io_get_sqe(struct io_ring_ctx *ctx, const struct io_uring_sqe **sqe)
 
 void nazgul_func(struct io_ring_ctx *ctx) 
 {
-	int occupancy_ratio = (READ_ONCE(ctx->rings->sq.tail) - READ_ONCE(ctx->rings->sq.head)) / ctx->sq_entries;
+	int empty_queue_ratio = (READ_ONCE(ctx->rings->sq.tail) - READ_ONCE(ctx->rings->sq.head)) / ctx->sq_entries;
 
-	if (remain == 0) {
+	if (empty_queue_ratio == 0) {
 		/*
 		 * this is sq ring saturate point.
 		 * user will submit additional sqes.
