@@ -340,6 +340,8 @@ static __cold struct io_ring_ctx *io_ring_ctx_alloc(struct io_uring_params *p)
 	INIT_LIST_HEAD(&ctx->tctx_list);
 	ctx->submit_state.free_list.next = NULL;
 	INIT_HLIST_HEAD(&ctx->waitid_list);
+	init_completion(&ctx->sq_expand_done);
+	spin_lock_init(&ctx->lock);
 #ifdef CONFIG_FUTEX
 	INIT_HLIST_HEAD(&ctx->futex_list);
 #endif
@@ -2338,23 +2340,14 @@ static bool io_get_sqe(struct io_ring_ctx *ctx, const struct io_uring_sqe **sqe)
 	current_sqe = &ctx->sq_sqes[head];
 	*sqe = current_sqe;
 
-	if (current_sqe->opcode == 0) {
-		printk(KERN_INFO "io_get_sqe: SQE @ %p (index %u):\n", current_sqe, ctx->cached_sq_head - 1);
-		printk(KERN_INFO "  opcode: %u\n", current_sqe->opcode);
-		printk(KERN_INFO "  flags: 0x%x\n", current_sqe->flags);
-		printk(KERN_INFO "  fd: %d\n", current_sqe->fd);
-		printk(KERN_INFO "  addr: %llu\n", current_sqe->addr);
-		printk(KERN_INFO "user data is null");
-	}
-
 	return true;
 }
 
 void nazgul_func(struct io_ring_ctx *ctx) 
 {
-	int empty_queue_ratio = (READ_ONCE(ctx->rings->sq.tail) - READ_ONCE(ctx->rings->sq.head)) / ctx->sq_entries;
+	u32 pending = (READ_ONCE(ctx->rings->sq.tail) - READ_ONCE(ctx->rings->sq.head));
 
-	if (empty_queue_ratio == 0) {
+	if (pending == ctx->sq_entries) {
 		/*
 		 * this is sq ring saturate point.
 		 * user will submit additional sqes.
@@ -2398,8 +2391,9 @@ int io_submit_sqes(struct io_ring_ctx *ctx, unsigned int nr)
 	do {
 		const struct io_uring_sqe *sqe;
 		struct io_kiocb *req;
-		
-		nazgul_func(ctx);
+	
+		if (ctx->flags & IORING_SETUP_SQPOLL)
+			nazgul_func(ctx);
 
 		if (unlikely(!io_alloc_req(ctx, &req))) {
 				break;
@@ -3512,7 +3506,6 @@ static void io_expand_sq_ring_worker(struct work_struct *__work)
 		// 예시: 로직을 io_expand_sq_ring_do_work(ctx, tail) 함수로 분리했다고 가정.
 		ret = io_expand_sq_ring_do_work(ctx, tail); 
 
-
 		// 1. 작업 완료 신호 (락 필요)
 		spin_lock(&ctx->lock);
 		// 작업 완료 후 플래그를 false로 설정
@@ -3532,15 +3525,33 @@ static void io_expand_sq_ring_worker(struct work_struct *__work)
 
 		// NOTE: 링 확장이 완료되었음을 알리는 추가적인 신호/동기화 로직이 필요할 수 있습니다.
 		// (예: completion 사용, 또는 ctx에 작업 상태 업데이트)
+		percpu_ref_put(&ctx->refs);
 }
 
 int io_expand_sq_ring(struct io_ring_ctx *ctx, u32 tail)
 {
 		struct io_ring_expand_work *expand_work;
 
+		spin_lock(&ctx->lock);
+		if (ctx->sq_expand_pending) {
+				spin_unlock(&ctx->lock);
+				return -EBUSY;
+		}
+		ctx->sq_expand_pending = true;
+		reinit_completion(&ctx->sq_expand_done);
+		spin_unlock(&ctx->lock);
+		percpu_ref_get(&ctx->refs);
+
 		// 1. 작업 구조체 동적 할당
 		expand_work = kmalloc(sizeof(*expand_work), GFP_KERNEL);
-		if (!expand_work) return -ENOMEM;
+		if (!expand_work) {
+				spin_lock(&ctx->lock);
+				ctx->sq_expand_pending = false;
+				complete_all(&ctx->sq_expand_done);
+				spin_unlock(&ctx->lock);
+				percpu_ref_put(&ctx->refs);
+				return -ENOMEM;
+		}
 		
 		// 2. 구조체 필드 초기화
 		INIT_WORK(&expand_work->work, io_expand_sq_ring_worker);
@@ -3551,6 +3562,11 @@ int io_expand_sq_ring(struct io_ring_ctx *ctx, u32 tail)
 		if (!schedule_work(&expand_work->work)) {
 				// 스케줄링 실패 처리
 				kfree(expand_work);
+				spin_lock(&ctx->lock);
+				ctx->sq_expand_pending = false;
+				complete_all(&ctx->sq_expand_done);
+				spin_unlock(&ctx->lock);
+				percpu_ref_put(&ctx->refs);
 				return -EBUSY; // 또는 적절한 오류 코드
 		}
 									    
@@ -3575,7 +3591,7 @@ int io_expand_sq_ring_do_work(struct io_ring_ctx *ctx, u32 tail)
 	if (!size) return -EOVERFLOW;
 
 	new_node = kvzalloc(sizeof(struct io_uring_sqe_node), gfp);
-	if (!new_node) -ENOMEM;
+	if (!new_node) return -ENOMEM;
 
 	ptr = io_pages_map(&new_node->sqe_pages, &new_node->n_sqe_pages, size);	
 
