@@ -3612,13 +3612,6 @@ int io_expand_sq_ring_do_work(struct io_ring_ctx *ctx, u32 tail)
 
 	printk("do expand: nr_sq_arr_entries(%d)", ctx->nr_sq_arr_entries);
 
-	//ret = io_remap_sq_ring(ctx, new_node, tail);
-	
-	//if (ret) {
-	//	printk(KERN_ERR "vm_insert_page failed: %d ", ret);
-	//	return ret;
-	//}
-		
 	return 0;
 }
 
