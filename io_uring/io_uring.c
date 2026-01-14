@@ -3483,9 +3483,10 @@ int io_expand_sq_ring(struct io_ring_ctx *ctx, u32 tail)
 	ctx->nr_sq_arr_entries++;
 	
 	end = ktime_get();
-	sum_expand_ns = ktime_to_ns(ktime_sub(end, start));
+	s64 duration = ktime_to_ns(ktime_sub(end, start));
+	sum_expand_ns += duration;
 
-	printk("do expand: nr_sq_arr_entries(%d)", ctx->nr_sq_arr_entries);
+	printk("do expand: nr_sq_arr_entries(%d), duration(%lld)", ctx->nr_sq_arr_entries, duration);
 
 	ret = io_remap_sq_ring(ctx, new_node, tail);
 	
