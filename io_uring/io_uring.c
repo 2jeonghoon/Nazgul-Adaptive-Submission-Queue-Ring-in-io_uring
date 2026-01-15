@@ -2347,7 +2347,7 @@ void nazgul_func(struct io_ring_ctx *ctx)
 {
 	u32 pending = (READ_ONCE(ctx->rings->sq.tail) - READ_ONCE(ctx->rings->sq.head));
 
-	if (pending == ctx->sq_entries) {
+	if (unlikely(pending == ctx->sq_entries)) {
 		/*
 		 * this is sq ring saturate point.
 		 * user will submit additional sqes.
@@ -3454,7 +3454,12 @@ int io_remap_sq_ring(struct io_ring_ctx *ctx, struct io_uring_sqe_node* node, u3
 
 int io_ensure_sq_extended_and_remap(struct io_ring_ctx *ctx, u32 tail)
 {
-	printk("on-demand loop");
+	ktime_t start, end;
+
+	start = ktime_get();
+
+
+	printk("on-demand loop\n");
 	// 1. 확장 작업이 진행 중인지 확인 (락 필요)
 	spin_lock(&ctx->lock);
 	bool pending = ctx->sq_extend_pending;
@@ -3479,6 +3484,10 @@ int io_ensure_sq_extended_and_remap(struct io_ring_ctx *ctx, u32 tail)
 	
 
 	// 만약 사전 확장이 감지되지 않은 상태로 이 루프에 들어온 경우에 대한 예외처리도 진행해야 함	
+	end = ktime_get();
+
+	printk("on-demand loop (taken time: %lld)", ktime_to_ns(ktime_sub(end, start)));
+
 	int ret = io_remap_sq_ring(ctx, ctx->sq_sqes_list.tail->next, tail);
 
 	return ret;
@@ -3614,7 +3623,7 @@ int io_extend_sq_ring_do_work(struct io_ring_ctx *ctx/*, u32 tail*/)
 	ctx->nr_sq_arr_entries++;
 	
 	end = ktime_get();
-	s64 due = ktime_to_ns(ktime_sub(end, start))
+	s64 due = ktime_to_ns(ktime_sub(end, start));
 	sum_extend_ns += due;
 
 	printk("do extend: nr_sq_arr_entries(%d), time taken (%lld)", ctx->nr_sq_arr_entries, due);
