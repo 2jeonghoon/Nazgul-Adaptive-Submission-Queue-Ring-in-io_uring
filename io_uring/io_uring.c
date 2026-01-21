@@ -2343,11 +2343,9 @@ static bool io_get_sqe(struct io_ring_ctx *ctx, const struct io_uring_sqe **sqe)
 	return true;
 }
 
-void nazgul_func(struct io_ring_ctx *ctx) 
+inline void nazgul_func(struct io_ring_ctx *ctx) 
 {
-	u32 pending = (READ_ONCE(ctx->rings->sq.tail) - READ_ONCE(ctx->rings->sq.head));
-
-	if (unlikely(pending == ctx->sq_entries)) {
+	if (unlikely(io_sqring_full(ctx))) {
 		/*
 		 * this is sq ring saturate point.
 		 * user will submit additional sqes.
@@ -2371,8 +2369,7 @@ void nazgul_func(struct io_ring_ctx *ctx)
 int io_submit_sqes(struct io_ring_ctx *ctx, unsigned int nr)
 	__must_hold(&ctx->uring_lock)
 {
-	unsigned int entries = io_sqring_entries(
-					ctx);
+	unsigned int entries = io_sqring_entries(ctx);
 	unsigned int left;
 	int ret;
 	/*
