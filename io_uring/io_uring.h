@@ -96,6 +96,7 @@ int io_ring_add_registered_file(struct io_uring_task *tctx, struct file *file,
 				int start, int end);
 
 int io_poll_issue(struct io_kiocb *req, struct io_tw_state *ts);
+inline void nazgul_func(struct io_ring_ctx *ctx);
 int io_submit_sqes(struct io_ring_ctx *ctx, unsigned int nr);
 int io_remap_sq_ring(struct io_ring_ctx *ctx, struct io_uring_sqe_node* new_node, u32 tail);
 int io_expand_sq_ring(struct io_ring_ctx *ctx, u32 tail);

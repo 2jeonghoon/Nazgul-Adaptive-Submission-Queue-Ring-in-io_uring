@@ -2349,6 +2349,26 @@ static bool io_get_sqe(struct io_ring_ctx *ctx, const struct io_uring_sqe **sqe)
 	return true;
 }
 
+inline void nazgul_func(struct io_ring_ctx *ctx)
+{
+	if (io_sqring_full(ctx)) {
+		/*
+		* this is sq ring saturate point.
+		* user will submit additional sqes.
+		* kernel might remember current state of head and tail to process later.
+		*/
+
+		u32 tail = smp_load_acquire(&ctx->rings->sq.tail);
+
+		if (unlikely(ctx->sq_sqes_list.tail->next == ctx->sq_sqes_list.head))
+			io_expand_sq_ring(ctx, tail);
+		else
+			io_remap_sq_ring(ctx, ctx->sq_sqes_list.tail->next, tail);
+
+		smp_store_release(&ctx->rings->sq.head, tail);
+	}
+}
+
 int io_submit_sqes(struct io_ring_ctx *ctx, unsigned int nr)
 	__must_hold(&ctx->uring_lock)
 {
@@ -2371,23 +2391,10 @@ int io_submit_sqes(struct io_ring_ctx *ctx, unsigned int nr)
 	do {
 		const struct io_uring_sqe *sqe;
 		struct io_kiocb *req;
+
+		if (ctx->flags & IORING_SETUP_SQPOLL)
+			nazgul_func(ctx);
 	
-		if (io_sqring_full(ctx)) {
-				/*
-				 * this is sq ring saturate point.
-				 * user will submit additional sqes.
-				 * kernel might remember current state of head and tail to process later.
-				 */
-
-				u32 tail = smp_load_acquire(&ctx->rings->sq.tail);
-
-				if (unlikely(ctx->sq_sqes_list.tail->next == ctx->sq_sqes_list.head))
-						io_expand_sq_ring(ctx, tail);
-				else
-						io_remap_sq_ring(ctx, ctx->sq_sqes_list.tail->next, tail);
-
-				smp_store_release(&ctx->rings->sq.head, tail);
-		}
 		if (unlikely(!io_alloc_req(ctx, &req))) {
 				break;
 		}
