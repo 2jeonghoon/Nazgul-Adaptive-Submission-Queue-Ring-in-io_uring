@@ -99,7 +99,7 @@ int io_poll_issue(struct io_kiocb *req, struct io_tw_state *ts);
 inline void nazgul_func(struct io_ring_ctx *ctx);
 int io_submit_sqes(struct io_ring_ctx *ctx, unsigned int nr);
 int io_remap_sq_ring(struct io_ring_ctx *ctx, struct io_uring_sqe_node* new_node, u32 tail);
-int io_expand_sq_ring(struct io_ring_ctx *ctx, u32 tail);
+int io_extend_sq_ring(struct io_ring_ctx *ctx, u32 tail);
 int io_do_iopoll(struct io_ring_ctx *ctx, bool force_nonspin);
 void __io_submit_flush_completions(struct io_ring_ctx *ctx);
 
@@ -313,7 +313,7 @@ static inline unsigned int io_sqring_entries(struct io_ring_ctx *ctx)
 	if (likely(ctx->sq_sqes_list.head == ctx->sq_sqes_list.tail))
 		entries = smp_load_acquire(&rings->sq.tail) - ctx->cached_sq_head;
 	else 
-		entries = ctx->sq_sqes_list.head->sq.tail - ctx->cached_sq_head;
+		entries = ctx->sq_sqes_list.head->sq_tail - ctx->cached_sq_head;
 
 	return min(entries, ctx->sq_entries);
 }

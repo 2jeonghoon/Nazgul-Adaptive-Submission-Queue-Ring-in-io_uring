@@ -107,7 +107,7 @@ struct io_uring {
 
 struct io_uring_sqe_node {
 	struct io_uring_sqe* sqe;
-	struct io_uring sq;
+	u32 sq_tail;
 	struct io_uring_sqe_node *next;
 	struct page** sqe_pages;
 	unsigned short n_sqe_pages;

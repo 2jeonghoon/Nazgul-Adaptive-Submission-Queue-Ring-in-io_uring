@@ -2282,7 +2282,7 @@ static void io_commit_sqring(struct io_ring_ctx *ctx)
 	 */
 
 	if(unlikely(ctx->sq_sqes_list.head != ctx->sq_sqes_list.tail)) {
-		if(ctx->sq_sqes_list.head->sq.tail == ctx->cached_sq_head) {
+		if(ctx->sq_sqes_list.head->sq_tail == ctx->cached_sq_head) {
 			ctx->sq_sqes_list.head = ctx->sq_sqes_list.head->next;
 			ctx->sq_sqes = ctx->sq_sqes_list.head->sqe;
 		}
@@ -2361,7 +2361,7 @@ inline void nazgul_func(struct io_ring_ctx *ctx)
 		u32 tail = smp_load_acquire(&ctx->rings->sq.tail);
 
 		if (unlikely(ctx->sq_sqes_list.tail->next == ctx->sq_sqes_list.head))
-			io_expand_sq_ring(ctx, tail);
+			io_extend_sq_ring(ctx, tail);
 		else
 			io_remap_sq_ring(ctx, ctx->sq_sqes_list.tail->next, tail);
 
@@ -2637,14 +2637,14 @@ static void *io_sqes_map(struct io_ring_ctx *ctx, unsigned long uaddr,
 }
 
 static s64 sum_remap_ns = 0;
-static s64 sum_expand_ns = 0;
+static s64 sum_extend_ns = 0;
 static int nr_remap_cnt = 0;
 
 static void io_rings_free(struct io_ring_ctx *ctx)
 {
 	printk("nr_list:%d\n", ctx->nr_sq_arr_entries);
 	printk("remapping execution sum time:%lld\n", sum_remap_ns);
-	printk("expand execution sum time:%lld\n", sum_expand_ns);
+	printk("extend execution sum time:%lld\n", sum_extend_ns);
 	printk("nr_remap_cnt:%d\n", nr_remap_cnt);
 
 	if (!(ctx->flags & IORING_SETUP_NO_MMAP)) {	
@@ -3437,7 +3437,7 @@ int io_remap_sq_ring(struct io_ring_ctx *ctx, struct io_uring_sqe_node* node, u3
 
 	start = ktime_get();
 
-	ctx->sq_sqes_list.tail->sq.tail = tail;
+	ctx->sq_sqes_list.tail->sq_tail = tail;
 
 	mmap_write_lock(vma->vm_mm);
 	zap_page_range_single(vma, vma->vm_start, vma->vm_end - vma->vm_start, NULL);
@@ -3458,7 +3458,7 @@ int io_remap_sq_ring(struct io_ring_ctx *ctx, struct io_uring_sqe_node* node, u3
 	return ret;
 }
 
-int io_expand_sq_ring(struct io_ring_ctx *ctx, u32 tail)
+int io_extend_sq_ring(struct io_ring_ctx *ctx, u32 tail)
 {
 	ktime_t start, end;
 	size_t size;
@@ -3491,9 +3491,9 @@ int io_expand_sq_ring(struct io_ring_ctx *ctx, u32 tail)
 	
 	end = ktime_get();
 	s64 duration = ktime_to_ns(ktime_sub(end, start));
-	sum_expand_ns += duration;
+	sum_extend_ns += duration;
 
-	printk("do expand: nr_sq_arr_entries(%d), duration(%lld)", ctx->nr_sq_arr_entries, duration);
+	printk("do extend: nr_sq_arr_entries(%d), duration(%lld)", ctx->nr_sq_arr_entries, duration);
 
 	ret = io_remap_sq_ring(ctx, new_node, tail);
 	
