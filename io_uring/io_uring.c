@@ -1751,7 +1751,7 @@ static int io_issue_sqe(struct io_kiocb *req, unsigned int issue_flags)
 	int ret;
 
 	if (unlikely(!io_assign_file(req, def, issue_flags))) {
-		printk("!io_assign_file");
+		/* printk("!io_assign_file"); */
 		return -EBADF;
 	}
 
@@ -2089,7 +2089,7 @@ static int io_init_req(struct io_ring_ctx *ctx, struct io_kiocb *req,
 		if (sqe_flags & ~SQE_VALID_FLAGS)
 			return io_init_fail_req(req, -EINVAL);
 		if (sqe_flags & IOSQE_BUFFER_SELECT) {
-			printk("IOSQE_BUFFER_SELECT is valid case\n");
+			/* printk("IOSQE_BUFFER_SELECT is valid case\n"); */
 			if (!def->buffer_select)
 				return io_init_fail_req(req, -EOPNOTSUPP);
 			req->buf_index = READ_ONCE(sqe->buf_group);
@@ -2336,15 +2336,6 @@ static bool io_get_sqe(struct io_ring_ctx *ctx, const struct io_uring_sqe **sqe)
 
 	current_sqe = &ctx->sq_sqes[head];
 	*sqe = current_sqe;
-
-	if (current_sqe->opcode == 0) {
-		printk(KERN_INFO "io_get_sqe: SQE @ %p (index %u):\n", current_sqe, ctx->cached_sq_head - 1);
-		printk(KERN_INFO "  opcode: %u\n", current_sqe->opcode);
-		printk(KERN_INFO "  flags: 0x%x\n", current_sqe->flags);
-		printk(KERN_INFO "  fd: %d\n", current_sqe->fd);
-		printk(KERN_INFO "  addr: %llu\n", current_sqe->addr);
-		printk(KERN_INFO "user data is null");
-	}
 
 	return true;
 }
@@ -2640,24 +2631,50 @@ static s64 sum_remap_ns = 0;
 static s64 sum_extend_ns = 0;
 static int nr_remap_cnt = 0;
 
+static void io_sqes_list_free(struct io_ring_ctx *ctx)
+{
+	struct io_uring_sqe_node *node, *head, *next;
+
+	head = ctx->sq_sqes_list.head;
+	if (!head)
+		return;
+
+	node = head;
+	do {
+		next = node->next;
+		if (!(ctx->flags & IORING_SETUP_NO_MMAP)) {
+			io_pages_unmap(node->sqe, &node->sqe_pages,
+				       &node->n_sqe_pages, true);
+		} else {
+			io_pages_free(&node->sqe_pages, node->n_sqe_pages);
+			node->n_sqe_pages = 0;
+			if (node->sqe)
+				vunmap(node->sqe);
+		}
+		kvfree(node);
+		node = next;
+	} while (node && node != head);
+
+	ctx->sq_sqes_list.head = NULL;
+	ctx->sq_sqes_list.tail = NULL;
+}
+
 static void io_rings_free(struct io_ring_ctx *ctx)
 {
 	printk("nr_list:%d\n", ctx->nr_sq_arr_entries);
-	printk("remapping execution sum time:%lld\n", sum_remap_ns);
+	printk("remapping execution sum time:%lld\n", sum_remap_ns); 
 	printk("extend execution sum time:%lld\n", sum_extend_ns);
 	printk("nr_remap_cnt:%d\n", nr_remap_cnt);
 
 	if (!(ctx->flags & IORING_SETUP_NO_MMAP)) {	
 				io_pages_unmap(ctx->rings, &ctx->ring_pages, &ctx->n_ring_pages, true);
-				io_pages_unmap(ctx->sq_sqes, &ctx->sq_sqes_list.tail->sqe_pages, &ctx->sq_sqes_list.tail->n_sqe_pages, true);
 	} else {
 		io_pages_free(&ctx->ring_pages, ctx->n_ring_pages);
 		ctx->n_ring_pages = 0;
-		io_pages_free(&ctx->sq_sqes_list.tail->sqe_pages, ctx->sq_sqes_list.tail->n_sqe_pages);
-		ctx->sq_sqes_list.head->n_sqe_pages = 0;
 		vunmap(ctx->rings);
-		vunmap(ctx->sq_sqes);
 	}
+
+	io_sqes_list_free(ctx);
 
 	ctx->rings = NULL;
 	ctx->sq_sqes = NULL;
@@ -3493,12 +3510,12 @@ int io_extend_sq_ring(struct io_ring_ctx *ctx, u32 tail)
 	s64 duration = ktime_to_ns(ktime_sub(end, start));
 	sum_extend_ns += duration;
 
-	printk("do extend: nr_sq_arr_entries(%d), duration(%lld)", ctx->nr_sq_arr_entries, duration);
+/* printk("do extend: nr_sq_arr_entries(%d), duration(%lld)", ctx->nr_sq_arr_entries, duration); */
 
 	ret = io_remap_sq_ring(ctx, new_node, tail);
 	
 	if (ret) {
-		printk(KERN_ERR "vm_insert_page failed: %d ", ret);
+		/* printk(KERN_ERR "vm_insert_page failed: %d ", ret); */
 		return ret;
 	}
 		
@@ -3561,8 +3578,8 @@ static __cold int io_allocate_scq_urings(struct io_ring_ctx *ctx,
 
 	ctx->sq_sqes = ctx->sq_sqes_list.head->sqe = ptr;
 
-	printk("%d\n", current->pid);
-	printk("head:sqe=%p, tail:sqe=%p", ctx->sq_sqes_list.head->sqe, ctx->sq_sqes_list.tail->sqe);
+/* printk("%d\n", current->pid); */
+/* printk("head:sqe=%p, tail:sqe=%p", ctx->sq_sqes_list.head->sqe, ctx->sq_sqes_list.tail->sqe); */
 
 	return 0;
 }
