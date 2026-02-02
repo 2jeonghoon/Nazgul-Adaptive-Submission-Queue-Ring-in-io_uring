@@ -1754,7 +1754,7 @@ static int io_issue_sqe(struct io_kiocb *req, unsigned int issue_flags)
 	int ret;
 
 	if (unlikely(!io_assign_file(req, def, issue_flags))) {
-		printk("!io_assign_file");
+		/* printk("!io_assign_file"); */
 		return -EBADF;
 	}
 
@@ -2092,7 +2092,7 @@ static int io_init_req(struct io_ring_ctx *ctx, struct io_kiocb *req,
 		if (sqe_flags & ~SQE_VALID_FLAGS)
 			return io_init_fail_req(req, -EINVAL);
 		if (sqe_flags & IOSQE_BUFFER_SELECT) {
-			printk("IOSQE_BUFFER_SELECT is valid case\n");
+			/* printk("IOSQE_BUFFER_SELECT is valid case\n"); */
 			if (!def->buffer_select)
 				return io_init_fail_req(req, -EOPNOTSUPP);
 			req->buf_index = READ_ONCE(sqe->buf_group);
@@ -2637,24 +2637,50 @@ static s64 sum_remap_ns = 0;
 static s64 sum_extend_ns = 0;
 static int nr_remap_cnt = 0;
 
+static void io_sqes_list_free(struct io_ring_ctx *ctx)
+{
+	struct io_uring_sqe_node *node, *head, *next;
+
+	head = ctx->sq_sqes_list.head;
+	if (!head)
+		return;
+
+	node = head;
+	do {
+		next = node->next;
+		if (!(ctx->flags & IORING_SETUP_NO_MMAP)) {
+			io_pages_unmap(node->sqe, &node->sqe_pages,
+				       &node->n_sqe_pages, true);
+		} else {
+			io_pages_free(&node->sqe_pages, node->n_sqe_pages);
+			node->n_sqe_pages = 0;
+			if (node->sqe)
+				vunmap(node->sqe);
+		}
+		kvfree(node);
+		node = next;
+	} while (node && node != head);
+
+	ctx->sq_sqes_list.head = NULL;
+	ctx->sq_sqes_list.tail = NULL;
+}
+
 static void io_rings_free(struct io_ring_ctx *ctx)
 {
-	printk("nr_list:%d\n", ctx->nr_sq_arr_entries);
-	printk("remapping execution sum time:%lld\n", sum_remap_ns);
-	printk("extend execution sum time:%lld\n", sum_extend_ns);
-	printk("nr_remap_cnt:%d\n", nr_remap_cnt);
+	/* printk("nr_list:%d\n", ctx->nr_sq_arr_entries); */
+	/* printk("remapping execution sum time:%lld\n", sum_remap_ns); */
+	/* printk("extend execution sum time:%lld\n", sum_extend_ns); */
+	/* printk("nr_remap_cnt:%d\n", nr_remap_cnt); */
 
 	if (!(ctx->flags & IORING_SETUP_NO_MMAP)) {	
 				io_pages_unmap(ctx->rings, &ctx->ring_pages, &ctx->n_ring_pages, true);
-				io_pages_unmap(ctx->sq_sqes, &ctx->sq_sqes_list.tail->sqe_pages, &ctx->sq_sqes_list.tail->n_sqe_pages, true);
 	} else {
 		io_pages_free(&ctx->ring_pages, ctx->n_ring_pages);
 		ctx->n_ring_pages = 0;
-		io_pages_free(&ctx->sq_sqes_list.tail->sqe_pages, ctx->sq_sqes_list.tail->n_sqe_pages);
-		ctx->sq_sqes_list.head->n_sqe_pages = 0;
 		vunmap(ctx->rings);
-		vunmap(ctx->sq_sqes);
 	}
+
+	io_sqes_list_free(ctx);
 
 	ctx->rings = NULL;
 	ctx->sq_sqes = NULL;
@@ -3456,7 +3482,7 @@ int io_ensure_sq_extended_and_remap(struct io_ring_ctx *ctx, u32 tail)
 	start = ktime_get();
 
 
-	printk("on-demand loop\n");
+	/* printk("on-demand loop\n"); */
 	// 1. 확장 작업이 진행 중인지 확인 (락 필요)
 	spin_lock(&ctx->lock);
 	bool pending = ctx->sq_extend_pending;
@@ -3467,7 +3493,7 @@ int io_ensure_sq_extended_and_remap(struct io_ring_ctx *ctx, u32 tail)
 		// 재매핑은 확장이 끝난 후 반드시 수행되어야 하므로 wait_for_completion 호출.	
 		wait_for_completion(&ctx->sq_extend_done);
 										        
-		printk("Extend operation forced synchronous wait completed.\n");
+		/* printk("Extend operation forced synchronous wait completed.\n"); */
 	}
    
 	if (unlikely(ctx->sq_sqes_list.tail->next == ctx->sq_sqes_list.head)) {
@@ -3483,7 +3509,7 @@ int io_ensure_sq_extended_and_remap(struct io_ring_ctx *ctx, u32 tail)
 	// 만약 사전 확장이 감지되지 않은 상태로 이 루프에 들어온 경우에 대한 예외처리도 진행해야 함	
 	end = ktime_get();
 
-	printk("on-demand loop (taken time: %lld)", ktime_to_ns(ktime_sub(end, start)));
+	/* printk("on-demand loop (taken time: %lld)", ktime_to_ns(ktime_sub(end, start))); */
 
 	int ret = io_remap_sq_ring(ctx, ctx->sq_sqes_list.tail->next, tail);
 
@@ -3583,7 +3609,7 @@ int io_extend_sq_ring(struct io_ring_ctx *ctx/*, u32 tail*/)
 
 	end = ktime_get();
 
-	printk("provisioning loop (taken time: %lld)", ktime_to_ns(ktime_sub(end, start)));
+	/* printk("provisioning loop (taken time: %lld)", ktime_to_ns(ktime_sub(end, start))); */
 
 	return 0; 	
 }
@@ -3623,7 +3649,7 @@ int io_extend_sq_ring_do_work(struct io_ring_ctx *ctx/*, u32 tail*/)
 	s64 due = ktime_to_ns(ktime_sub(end, start));
 	sum_extend_ns += due;
 
-	printk("do extend: nr_sq_arr_entries(%d), time taken (%lld)", ctx->nr_sq_arr_entries, due);
+	/* printk("do extend: nr_sq_arr_entries(%d), time taken (%lld)", ctx->nr_sq_arr_entries, due); */
 
 	return 0;
 }
@@ -3684,8 +3710,8 @@ static __cold int io_allocate_scq_urings(struct io_ring_ctx *ctx,
 
 	ctx->sq_sqes = ctx->sq_sqes_list.head->sqe = ptr;
 
-	printk("%d\n", current->pid);
-	printk("head:sqe=%p, tail:sqe=%p", ctx->sq_sqes_list.head->sqe, ctx->sq_sqes_list.tail->sqe);
+	/* printk("%d\n", current->pid); */
+	/* printk("head:sqe=%p, tail:sqe=%p", ctx->sq_sqes_list.head->sqe, ctx->sq_sqes_list.tail->sqe); */
 
 	return 0;
 }
