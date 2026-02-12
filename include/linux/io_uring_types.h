@@ -300,7 +300,9 @@ struct io_ring_ctx {
 	unsigned short n_ring_pages;
 	struct page **ring_pages;
 	struct io_uring_sqe_list sq_sqes_list;
-	unsigned nr_sq_arr_entries; 
+	struct io_uring_sqe_list sq_spare_list;
+	unsigned nr_sq_arr_entries;
+	unsigned nr_sq_spare_entries;
 	struct vm_area_struct *sqe_vma;
 	struct completion sq_extend_done; // 확장 작업이 완료되었음을 알리는 구조체
 	bool sq_extend_pending;           // 확장 작업이 비동기적으로 진행 중인지 확인하는 플래그
