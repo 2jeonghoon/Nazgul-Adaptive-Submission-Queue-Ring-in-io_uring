@@ -341,7 +341,6 @@ static __cold struct io_ring_ctx *io_ring_ctx_alloc(struct io_uring_params *p)
 	INIT_LIST_HEAD(&ctx->tctx_list);
 	ctx->submit_state.free_list.next = NULL;
 	INIT_HLIST_HEAD(&ctx->waitid_list);
-	init_completion(&ctx->sq_extend_done);
 	spin_lock_init(&ctx->lock);
 #ifdef CONFIG_FUTEX
 	INIT_HLIST_HEAD(&ctx->futex_list);
@@ -3526,8 +3525,6 @@ static void io_extend_sq_ring_worker(struct work_struct *__work)
 		spin_lock(&ctx->lock);
 		// 작업 완료 후 플래그를 false로 설정
 		ctx->sq_extend_pending = false; 
-		// 대기 중인 모든 스레드에게 작업이 완료되었음을 알림
-		complete_all(&ctx->sq_extend_done); 
 		spin_unlock(&ctx->lock);
 
 		if (ret) {
@@ -3539,8 +3536,7 @@ static void io_extend_sq_ring_worker(struct work_struct *__work)
 
 		kfree(extend_work); 
 
-		// NOTE: 링 확장이 완료되었음을 알리는 추가적인 신호/동기화 로직이 필요할 수 있습니다.
-		// (예: completion 사용, 또는 ctx에 작업 상태 업데이트)
+		// NOTE: 필요하면 여기서 추가 상태 신호/통계를 갱신할 수 있습니다.
 		percpu_ref_put(&ctx->refs);
 }
 
@@ -3560,7 +3556,6 @@ int io_extend_sq_ring(struct io_ring_ctx *ctx/*, u32 tail*/)
 	}
 	
 	ctx->sq_extend_pending = true;	
-	reinit_completion(&ctx->sq_extend_done);
 	spin_unlock(&ctx->lock);
 	percpu_ref_get(&ctx->refs);
 	
@@ -3569,7 +3564,6 @@ int io_extend_sq_ring(struct io_ring_ctx *ctx/*, u32 tail*/)
 	if (!extend_work) {	
 		spin_lock(&ctx->lock);	
 		ctx->sq_extend_pending = false;	
-		complete_all(&ctx->sq_extend_done);		
 		spin_unlock(&ctx->lock);	
 		percpu_ref_put(&ctx->refs);	
 		return -ENOMEM;	
@@ -3586,7 +3580,6 @@ int io_extend_sq_ring(struct io_ring_ctx *ctx/*, u32 tail*/)
 		kfree(extend_work);	
 		spin_lock(&ctx->lock);	
 		ctx->sq_extend_pending = false;	
-		complete_all(&ctx->sq_extend_done);	
 		spin_unlock(&ctx->lock);	
 		percpu_ref_put(&ctx->refs);	
 		return -EBUSY; // 또는 적절한 오류 코드	

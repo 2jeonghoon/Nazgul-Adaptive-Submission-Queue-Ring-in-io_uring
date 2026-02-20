@@ -304,7 +304,6 @@ struct io_ring_ctx {
 	unsigned nr_sq_arr_entries;
 	unsigned nr_sq_spare_entries;
 	struct vm_area_struct *sqe_vma;
-	struct completion sq_extend_done; // 확장 작업이 완료되었음을 알리는 구조체
 	bool sq_extend_pending;           // 확장 작업이 비동기적으로 진행 중인지 확인하는 플래그
 	spinlock_t lock;                  // ctx 보호를 위한 락 (선택 사항이지만 안전을 위해 필요)
 };
