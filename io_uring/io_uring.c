@@ -2366,7 +2366,6 @@ static bool io_sq_spare_attach(struct io_ring_ctx *ctx)
 
 	spare_tail->next = ctx->sq_sqes_list.tail->next;
 	ctx->sq_sqes_list.tail->next = spare_head;
-	ctx->sq_sqes_list.tail = spare_tail;
 	ctx->nr_sq_arr_entries += spare_entries;
 
 	return true;
@@ -2697,10 +2696,10 @@ static void io_sqes_list_free(struct io_ring_ctx *ctx,
 
 static void io_rings_free(struct io_ring_ctx *ctx)
 {
-	/* printk("nr_list:%d\n", ctx->nr_sq_arr_entries); */
-	/* printk("remapping execution sum time:%lld\n", sum_remap_ns); */
-	/* printk("extend execution sum time:%lld\n", sum_extend_ns); */
-	/* printk("nr_remap_cnt:%d\n", nr_remap_cnt); */
+	printk("nr_list:%d\n", ctx->nr_sq_arr_entries);
+	printk("remapping execution sum time:%lld\n", sum_remap_ns);
+	printk("extend execution sum time:%lld\n", sum_extend_ns);
+	printk("nr_remap_cnt:%d\n", nr_remap_cnt);
 
 	if (!(ctx->flags & IORING_SETUP_NO_MMAP)) {	
 				io_pages_unmap(ctx->rings, &ctx->ring_pages, &ctx->n_ring_pages, true);
