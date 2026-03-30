@@ -369,6 +369,8 @@ static int io_sq_thread(void *data)
 					needs_sched = false;
 					break;
 				}
+
+				io_sq_schedule_shrink(ctx);
 			}
 
 			if (needs_sched) {
