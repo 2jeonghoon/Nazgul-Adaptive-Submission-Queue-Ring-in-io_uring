@@ -1,0 +1,206 @@
+--- usr/src/linux-6.10.8nazgul+/io_uring/io_uring.c
++++ usr/src/linux-6.10.8nazgul+/io_uring/io_uring.c
+@@ -126,10 +126,13 @@
+ #define IO_REQ_ALLOC_BATCH 8
+ #define IO_SQ_EXTEND_BATCH 2
+ #define IO_SQ_RETURN_INTERVAL msecs_to_jiffies(1000)
+-#define IO_SQ_SPARE_LOW_WM 2
+-#define IO_SQ_SPARE_HIGH_WM (IO_SQ_SPARE_LOW_WM + IO_SQ_EXTEND_BATCH)
+ #define IO_SQ_SPARE_RECLAIM_BATCH IO_SQ_EXTEND_BATCH
+ 
++static inline unsigned int io_sq_spare_cap(unsigned int active)
++{
++	return active >> 1;
++}
++
+ struct io_defer_entry {
+ 	struct list_head list;
+ 	struct io_kiocb *req;
+@@ -2400,7 +2403,8 @@
+ 
+ 		need_extend = attach_res == IO_SQ_SPARE_ATTACH_EMPTY;
+ 		if (!need_extend)
+-			need_extend = READ_ONCE(ctx->nr_sq_spare_entries) < IO_SQ_SPARE_LOW_WM;
++			need_extend = READ_ONCE(ctx->nr_sq_spare_entries) <
++				io_sq_spare_cap(READ_ONCE(ctx->nr_sq_arr_entries));
+ 		if (need_extend && !READ_ONCE(ctx->sq_extend_pending))
+ 			io_extend_sq_ring(ctx);
+ 		if (attach_res != IO_SQ_SPARE_ATTACH_ATTACHED)
+@@ -2725,7 +2729,10 @@
+ 					unsigned int target)
+ {
+ 	struct io_uring_sqe_node *node;
++	struct io_uring_sqe_list free_list = {};
++	unsigned int spare_cap;
+ 	unsigned int moved = 0;
++	bool keep_as_spare = false;
+ 
+ 	if (!ctx->sq_sqes_list.head || !ctx->sq_sqes_list.tail)
+ 		return false;
+@@ -2744,17 +2751,27 @@
+ 	if (!moved)
+ 		return false;
+ 
++	spare_cap = io_sq_spare_cap(ctx->nr_sq_arr_entries);
+ 	spin_lock(&ctx->lock);
+-	if (ctx->sq_spare_list.head) {
+-		ctx->sq_spare_list.tail->next = node;
+-		ctx->sq_spare_list.tail = node;
+-		ctx->nr_sq_spare_entries++;
+-	} else {
+-		ctx->sq_spare_list.head = node;
+-		ctx->sq_spare_list.tail = node;
+-		ctx->nr_sq_spare_entries = 1;
++	if (ctx->nr_sq_spare_entries < spare_cap) {
++		if (ctx->sq_spare_list.head) {
++			ctx->sq_spare_list.tail->next = node;
++			ctx->sq_spare_list.tail = node;
++			ctx->nr_sq_spare_entries++;
++		} else {
++			ctx->sq_spare_list.head = node;
++			ctx->sq_spare_list.tail = node;
++			ctx->nr_sq_spare_entries = 1;
++		}
++		keep_as_spare = true;
+ 	}
+ 	spin_unlock(&ctx->lock);
++
++	if (!keep_as_spare) {
++		free_list.head = node;
++		free_list.tail = node;
++		io_sqes_list_free(ctx, &free_list);
++	}
+ 	printk(KERN_INFO "nazgul_sq shrink_move ctx=%px moved=%u target=%u active=%u online=%u max_online=%u spare=%u\n",
+ 	       ctx, moved, target, ctx->nr_sq_arr_entries,
+ 	       ctx->nr_sq_online_entries, ctx->max_online_sq,
+@@ -2787,10 +2804,12 @@
+ 	unsigned int to_reclaim = 0;
+ 	unsigned int reclaimed_nr = 0;
+ 	bool reclaimed = false;
++	unsigned int spare_cap;
+ 
+ 	spin_lock(&ctx->lock);
+-	if (ctx->nr_sq_spare_entries > IO_SQ_SPARE_HIGH_WM) {
+-		to_reclaim = ctx->nr_sq_spare_entries - IO_SQ_SPARE_LOW_WM;
++	spare_cap = io_sq_spare_cap(ctx->nr_sq_arr_entries);
++	if (ctx->nr_sq_spare_entries > spare_cap) {
++		to_reclaim = ctx->nr_sq_spare_entries - spare_cap;
+ 		to_reclaim = min(to_reclaim, (unsigned int)IO_SQ_SPARE_RECLAIM_BATCH);
+ 	}
+ 
+@@ -2840,7 +2859,8 @@
+ 	io_sq_reclaim_spare_nodes(ctx);
+ 
+ 	if (!percpu_ref_is_dying(&ctx->refs) &&
+-	    READ_ONCE(ctx->nr_sq_spare_entries) > IO_SQ_SPARE_HIGH_WM)
++	    READ_ONCE(ctx->nr_sq_spare_entries) >
++		    io_sq_spare_cap(READ_ONCE(ctx->nr_sq_arr_entries)))
+ 		queue_work(system_wq, &ctx->sq_shrink_work);
+ }
+ 
+@@ -2855,7 +2875,8 @@
+ 		return;
+ 
+ 	moved = io_sq_update_max_and_maybe_return(ctx);
+-	if (moved || READ_ONCE(ctx->nr_sq_spare_entries) > IO_SQ_SPARE_HIGH_WM)
++	if (moved || READ_ONCE(ctx->nr_sq_spare_entries) >
++		    io_sq_spare_cap(READ_ONCE(ctx->nr_sq_arr_entries)))
+ 		io_sq_schedule_shrink(ctx);
+ }
+ 
+@@ -2869,7 +2890,8 @@
+ 		return;
+ 	now = jiffies;
+ 	if (time_before(now, ctx->max_online_decay_jiffies + IO_SQ_RETURN_INTERVAL) &&
+-	    READ_ONCE(ctx->nr_sq_spare_entries) <= IO_SQ_SPARE_HIGH_WM)
++	    READ_ONCE(ctx->nr_sq_spare_entries) <=
++		    io_sq_spare_cap(READ_ONCE(ctx->nr_sq_arr_entries)))
+ 		return;
+ 	if (!mutex_trylock(&ctx->uring_lock))
+ 		return;
+@@ -2884,7 +2906,8 @@
+ 		return;
+ 	if (percpu_ref_is_dying(&ctx->refs))
+ 		return;
+-	if (READ_ONCE(ctx->nr_sq_spare_entries) <= IO_SQ_SPARE_HIGH_WM)
++	if (READ_ONCE(ctx->nr_sq_spare_entries) <=
++		    io_sq_spare_cap(READ_ONCE(ctx->nr_sq_arr_entries)))
+ 		return;
+ 
+ 	queue_work(system_wq, &ctx->sq_shrink_work);
+@@ -3819,8 +3842,15 @@
+ 	struct io_uring_sqe_node* last = NULL;
+ 	struct io_uring_sqe_node* node;
+ 	struct io_uring_sqe_node* next;
++	struct io_uring_sqe_node* keep_tail = NULL;
++	struct io_uring_sqe_node* free_head = NULL;
++	struct io_uring_sqe_node* free_tail = NULL;
+ 	int added = 0;
++	unsigned int keep = 0;
++	unsigned int spare_cap = 0;
++	unsigned int desired_spare = 0;
+ 	unsigned int spare_after = 0;
++	struct io_uring_sqe_list free_list = {};
+ 	gfp_t gfp = GFP_KERNEL_ACCOUNT | __GFP_ZERO | __GFP_NOWARN;
+ 
+ 	start = ktime_get();
+@@ -3856,20 +3886,49 @@
+ 
+ 	if (added) {
+ 		spin_lock(&ctx->lock);
+-		if (ctx->sq_spare_list.head) {
+-			ctx->sq_spare_list.tail->next = first;
+-			ctx->sq_spare_list.tail = last;
+-			ctx->nr_sq_spare_entries += added;
++		spare_cap = io_sq_spare_cap(ctx->nr_sq_arr_entries);
++		desired_spare = spare_cap;
++		if (!desired_spare && !ctx->nr_sq_spare_entries)
++			desired_spare = 1;
++		if (ctx->nr_sq_spare_entries < desired_spare)
++			keep = min_t(unsigned int, added,
++				     desired_spare - ctx->nr_sq_spare_entries);
++
++		if (keep) {
++			keep_tail = first;
++			for (i = 1; i < keep; i++)
++				keep_tail = keep_tail->next;
++			free_head = keep_tail->next;
++			free_tail = last;
++			keep_tail->next = NULL;
++
++			if (ctx->sq_spare_list.head) {
++				ctx->sq_spare_list.tail->next = first;
++				ctx->sq_spare_list.tail = keep_tail;
++				ctx->nr_sq_spare_entries += keep;
++			} else {
++				ctx->sq_spare_list.head = first;
++				ctx->sq_spare_list.tail = keep_tail;
++				ctx->nr_sq_spare_entries = keep;
++			}
+ 		} else {
+-			ctx->sq_spare_list.head = first;
+-			ctx->sq_spare_list.tail = last;
+-			ctx->nr_sq_spare_entries = added;
++			free_head = first;
++			free_tail = last;
+ 		}
+ 		spare_after = ctx->nr_sq_spare_entries;
+ 		spin_unlock(&ctx->lock);
+-		printk(KERN_INFO "nazgul_sq grow_alloc ctx=%px added=%d active=%u online=%u spare=%u\n",
+-		       ctx, added, ctx->nr_sq_arr_entries,
+-		       ctx->nr_sq_online_entries, spare_after);
++
++		if (free_head) {
++			free_list.head = free_head;
++			free_list.tail = free_tail;
++			io_sqes_list_free(ctx, &free_list);
++		}
++
++		if (keep) {
++			printk(KERN_INFO "nazgul_sq grow_alloc ctx=%px added=%u active=%u online=%u spare=%u\n",
++			       ctx, keep, ctx->nr_sq_arr_entries,
++			       ctx->nr_sq_online_entries, spare_after);
++		}
+ 	}
+ 	
+ 	end = ktime_get();

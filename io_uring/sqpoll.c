@@ -196,6 +196,7 @@ static int __io_sq_thread(struct io_ring_ctx *ctx, bool cap_entries)
 		if (to_submit && likely(!percpu_ref_is_dying(&ctx->refs)) &&
 		    !(ctx->flags & IORING_SETUP_R_DISABLED))
 			ret = io_submit_sqes(ctx, to_submit);
+		io_sq_sqpoll_return_locked(ctx);
 		mutex_unlock(&ctx->uring_lock);
 
 		if (io_napi(ctx))
@@ -370,7 +371,7 @@ static int io_sq_thread(void *data)
 					break;
 				}
 
-				io_sq_schedule_shrink(ctx);
+				io_sq_sqpoll_try_return(ctx);
 			}
 
 			if (needs_sched) {

@@ -305,10 +305,11 @@ struct io_ring_ctx {
 	unsigned nr_sq_spare_entries;
 	unsigned nr_sq_online_entries;
 	unsigned max_online_sq;
+	unsigned window_max_online_sq;
 	unsigned long max_online_decay_jiffies;
 	struct vm_area_struct *sqe_vma;
 	bool sq_extend_pending;           // 확장 작업이 비동기적으로 진행 중인지 확인하는 플래그
-	struct delayed_work sq_shrink_work;
+	struct work_struct sq_shrink_work;
 	spinlock_t lock;                  // ctx 보호를 위한 락 (선택 사항이지만 안전을 위해 필요)
 };
 
