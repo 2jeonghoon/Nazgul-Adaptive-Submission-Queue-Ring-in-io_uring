@@ -306,6 +306,7 @@ struct io_ring_ctx {
 	unsigned nr_sq_online_entries;
 	unsigned max_online_sq;
 	unsigned window_max_online_sq;
+	unsigned long sq_reclaim_ses;
 	unsigned long max_online_decay_jiffies;
 	struct vm_area_struct *sqe_vma;
 	bool sq_extend_pending;           // 확장 작업이 비동기적으로 진행 중인지 확인하는 플래그

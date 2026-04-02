@@ -103,7 +103,7 @@
 #include "rw.h"
 #include "alloc_cache.h"
 
-#define IORING_MAX_ENTRIES 32768
+#define IORING_MAX_ENTRIES (1U<< 20)
 #define IORING_MAX_CQ_ENTRIES (2 * IORING_MAX_ENTRIES)
 
 #define SQE_COMMON_FLAGS \
@@ -124,18 +124,46 @@
 
 #define IO_COMPL_BATCH 32
 #define IO_REQ_ALLOC_BATCH 8
-#define IO_SQ_EXTEND_BATCH 2
-#define IO_SQ_RETURN_INTERVAL msecs_to_jiffies(1000)
-#define IO_SQ_SPARE_RECLAIM_BATCH IO_SQ_EXTEND_BATCH
-
-static inline unsigned int io_sq_spare_cap(unsigned int active)
-{
-	return active >> 1;
-}
+#define IO_SQ_RETURN_INTERVAL msecs_to_jiffies(10 * 60 * 1000)
+#define IO_SQ_SES_FP_SHIFT 8
+#define IO_SQ_SES_ALPHA_SHIFT 2
 
 static inline unsigned int io_sq_spare_extend_threshold(unsigned int active)
 {
 	return active >> 2;
+}
+
+static inline unsigned int io_sq_spare_provision_nr(unsigned int active,
+						     unsigned int spare)
+{
+	unsigned int desired = io_sq_spare_extend_threshold(active);
+
+	if (!desired && !spare)
+		desired = 1;
+	if (spare >= desired)
+		return 0;
+	return desired - spare;
+}
+
+/*
+ * Smooth the per-interval peak so short bursts still influence the next
+ * reclaim target without pinning the ring to the raw window maximum.
+ */
+static inline unsigned int io_sq_ses_target(unsigned long ses)
+{
+	unsigned int target = DIV_ROUND_UP(ses, 1UL << IO_SQ_SES_FP_SHIFT);
+
+	return max(target, 1U);
+}
+
+static inline unsigned long io_sq_ses_update(unsigned long ses,
+					     unsigned int sample)
+{
+	unsigned long sample_fp = (unsigned long)sample << IO_SQ_SES_FP_SHIFT;
+	unsigned long weight = (1UL << IO_SQ_SES_ALPHA_SHIFT) - 1;
+
+	ses = (weight * ses + sample_fp) >> IO_SQ_SES_ALPHA_SHIFT;
+	return max(ses, 1UL << IO_SQ_SES_FP_SHIFT);
 }
 
 struct io_defer_entry {
@@ -905,8 +933,6 @@ bool io_post_aux_cqe(struct io_ring_ctx *ctx, u64 user_data, s32 res,
 {
 	bool filled;
 
-	// printk("io_post_aux_cqe\n");
-
 	io_cq_lock(ctx);
 	filled = io_fill_cqe_aux(ctx, user_data, res, cflags);
 	if (!filled)
@@ -925,8 +951,6 @@ bool io_req_post_cqe(struct io_kiocb *req, s32 res, u32 cflags)
 {
 	struct io_ring_ctx *ctx = req->ctx;
 	bool posted;
-
-	// printk("io_req_post_cqe\n");
 
 	lockdep_assert(!io_wq_current_is_worker());
 	lockdep_assert_held(&ctx->uring_lock);
@@ -1768,7 +1792,6 @@ static int io_issue_sqe(struct io_kiocb *req, unsigned int issue_flags)
 	int ret;
 
 	if (unlikely(!io_assign_file(req, def, issue_flags))) {
-		/* printk("!io_assign_file"); */
 		return -EBADF;
 	}
 
@@ -2106,7 +2129,6 @@ static int io_init_req(struct io_ring_ctx *ctx, struct io_kiocb *req,
 		if (sqe_flags & ~SQE_VALID_FLAGS)
 			return io_init_fail_req(req, -EINVAL);
 		if (sqe_flags & IOSQE_BUFFER_SELECT) {
-			/* printk("IOSQE_BUFFER_SELECT is valid case\n"); */
 			if (!def->buffer_select)
 				return io_init_fail_req(req, -EOPNOTSUPP);
 			req->buf_index = READ_ONCE(sqe->buf_group);
@@ -2388,10 +2410,6 @@ static enum io_sq_spare_attach_result io_sq_spare_attach(struct io_ring_ctx *ctx
 	node->next = ctx->sq_sqes_list.tail->next;
 	ctx->sq_sqes_list.tail->next = node;
 	ctx->nr_sq_arr_entries++;
-	printk(KERN_INFO "nazgul_sq grow_attach ctx=%px added=%u active=%u online=%u spare=%u\n",
-	       ctx, 1U, ctx->nr_sq_arr_entries,
-	       ctx->nr_sq_online_entries,
-	       READ_ONCE(ctx->nr_sq_spare_entries));
 
 	return IO_SQ_SPARE_ATTACH_ATTACHED;
 }
@@ -2697,10 +2715,6 @@ static void *io_sqes_map(struct io_ring_ctx *ctx, unsigned long uaddr,
 			      size);
 }
 
-static s64 sum_remap_ns = 0;
-static s64 sum_extend_ns = 0;
-static int nr_remap_cnt = 0;
-
 static void io_sqes_list_free(struct io_ring_ctx *ctx,
 			      struct io_uring_sqe_list *list)
 {
@@ -2734,10 +2748,7 @@ static bool io_sq_move_offline_to_spare(struct io_ring_ctx *ctx,
 					unsigned int target)
 {
 	struct io_uring_sqe_node *node;
-	struct io_uring_sqe_list free_list = {};
-	unsigned int spare_cap;
 	unsigned int moved = 0;
-	bool keep_as_spare = false;
 
 	if (!ctx->sq_sqes_list.head || !ctx->sq_sqes_list.tail)
 		return false;
@@ -2756,37 +2767,25 @@ static bool io_sq_move_offline_to_spare(struct io_ring_ctx *ctx,
 	if (!moved)
 		return false;
 
-	spare_cap = io_sq_spare_cap(ctx->nr_sq_arr_entries);
 	spin_lock(&ctx->lock);
-	if (ctx->nr_sq_spare_entries < spare_cap) {
-		if (ctx->sq_spare_list.head) {
-			ctx->sq_spare_list.tail->next = node;
-			ctx->sq_spare_list.tail = node;
-			ctx->nr_sq_spare_entries++;
-		} else {
-			ctx->sq_spare_list.head = node;
-			ctx->sq_spare_list.tail = node;
-			ctx->nr_sq_spare_entries = 1;
-		}
-		keep_as_spare = true;
+	if (ctx->sq_spare_list.head) {
+		ctx->sq_spare_list.tail->next = node;
+		ctx->sq_spare_list.tail = node;
+		ctx->nr_sq_spare_entries++;
+	} else {
+		ctx->sq_spare_list.head = node;
+		ctx->sq_spare_list.tail = node;
+		ctx->nr_sq_spare_entries = 1;
 	}
 	spin_unlock(&ctx->lock);
 
-	if (!keep_as_spare) {
-		free_list.head = node;
-		free_list.tail = node;
-		io_sqes_list_free(ctx, &free_list);
-	}
-	printk(KERN_INFO "nazgul_sq shrink_move ctx=%px moved=%u target=%u active=%u online=%u max_online=%u spare=%u\n",
-	       ctx, moved, target, ctx->nr_sq_arr_entries,
-	       ctx->nr_sq_online_entries, ctx->max_online_sq,
-	       READ_ONCE(ctx->nr_sq_spare_entries));
 	return true;
 }
 
 static bool io_sq_update_max_and_maybe_return(struct io_ring_ctx *ctx)
 {
 	unsigned int online = max(ctx->nr_sq_online_entries, 1U);
+	unsigned int sample;
 	unsigned long now = jiffies;
 
 	if (ctx->window_max_online_sq < online)
@@ -2795,60 +2794,13 @@ static bool io_sq_update_max_and_maybe_return(struct io_ring_ctx *ctx)
 	if (time_before(now, ctx->max_online_decay_jiffies + IO_SQ_RETURN_INTERVAL))
 		return false;
 
-	ctx->max_online_sq = max(ctx->window_max_online_sq, 1U);
+	sample = max(ctx->window_max_online_sq, 1U);
+	ctx->sq_reclaim_ses = io_sq_ses_update(ctx->sq_reclaim_ses, sample);
+	ctx->max_online_sq = io_sq_ses_target(ctx->sq_reclaim_ses);
 	ctx->window_max_online_sq = online;
 	ctx->max_online_decay_jiffies = now;
 
 	return io_sq_move_offline_to_spare(ctx, ctx->max_online_sq);
-}
-
-static bool io_sq_reclaim_spare_nodes(struct io_ring_ctx *ctx)
-{
-	struct io_uring_sqe_node *node, *free_head = NULL, *free_tail = NULL;
-	struct io_uring_sqe_list free_list = {};
-	unsigned int to_reclaim = 0;
-	unsigned int reclaimed_nr = 0;
-	bool reclaimed = false;
-	unsigned int spare_cap;
-
-	spin_lock(&ctx->lock);
-	spare_cap = io_sq_spare_cap(ctx->nr_sq_arr_entries);
-	if (ctx->nr_sq_spare_entries > spare_cap) {
-		to_reclaim = ctx->nr_sq_spare_entries - spare_cap;
-		to_reclaim = min(to_reclaim, (unsigned int)IO_SQ_SPARE_RECLAIM_BATCH);
-	}
-
-	while (to_reclaim--) {
-		node = ctx->sq_spare_list.head;
-		if (!node)
-			break;
-		ctx->sq_spare_list.head = node->next;
-		if (!ctx->sq_spare_list.head)
-			ctx->sq_spare_list.tail = NULL;
-		node->next = NULL;
-		ctx->nr_sq_spare_entries--;
-
-		if (!free_head)
-			free_head = node;
-		else
-			free_tail->next = node;
-		free_tail = node;
-		reclaimed_nr++;
-		reclaimed = true;
-	}
-	spin_unlock(&ctx->lock);
-
-	if (!reclaimed)
-		return false;
-
-	free_list.head = free_head;
-	free_list.tail = free_tail;
-	io_sqes_list_free(ctx, &free_list);
-	printk(KERN_INFO "nazgul_sq shrink_reclaim ctx=%px reclaimed=%u active=%u online=%u spare=%u\n",
-	       ctx, reclaimed_nr, ctx->nr_sq_arr_entries,
-	       ctx->nr_sq_online_entries,
-	       READ_ONCE(ctx->nr_sq_spare_entries));
-	return true;
 }
 
 static void io_sq_shrink_worker(struct work_struct *work)
@@ -2860,29 +2812,17 @@ static void io_sq_shrink_worker(struct work_struct *work)
 		return;
 	if (!(ctx->flags & IORING_SETUP_SQPOLL))
 		return;
-
-	io_sq_reclaim_spare_nodes(ctx);
-
-	if (!percpu_ref_is_dying(&ctx->refs) &&
-	    READ_ONCE(ctx->nr_sq_spare_entries) >
-		    io_sq_spare_cap(READ_ONCE(ctx->nr_sq_arr_entries)))
-		queue_work(system_wq, &ctx->sq_shrink_work);
 }
 
 void io_sq_sqpoll_return_locked(struct io_ring_ctx *ctx)
 	__must_hold(&ctx->uring_lock)
 {
-	bool moved;
-
 	if (!(ctx->flags & IORING_SETUP_SQPOLL))
 		return;
 	if (ctx->sq_extend_pending)
 		return;
 
-	moved = io_sq_update_max_and_maybe_return(ctx);
-	if (moved || READ_ONCE(ctx->nr_sq_spare_entries) >
-		    io_sq_spare_cap(READ_ONCE(ctx->nr_sq_arr_entries)))
-		io_sq_schedule_shrink(ctx);
+	io_sq_update_max_and_maybe_return(ctx);
 }
 
 void io_sq_sqpoll_try_return(struct io_ring_ctx *ctx)
@@ -2894,9 +2834,7 @@ void io_sq_sqpoll_try_return(struct io_ring_ctx *ctx)
 	if (percpu_ref_is_dying(&ctx->refs))
 		return;
 	now = jiffies;
-	if (time_before(now, ctx->max_online_decay_jiffies + IO_SQ_RETURN_INTERVAL) &&
-	    READ_ONCE(ctx->nr_sq_spare_entries) <=
-		    io_sq_spare_cap(READ_ONCE(ctx->nr_sq_arr_entries)))
+	if (time_before(now, ctx->max_online_decay_jiffies + IO_SQ_RETURN_INTERVAL))
 		return;
 	if (!mutex_trylock(&ctx->uring_lock))
 		return;
@@ -2911,20 +2849,10 @@ void io_sq_schedule_shrink(struct io_ring_ctx *ctx)
 		return;
 	if (percpu_ref_is_dying(&ctx->refs))
 		return;
-	if (READ_ONCE(ctx->nr_sq_spare_entries) <=
-		    io_sq_spare_cap(READ_ONCE(ctx->nr_sq_arr_entries)))
-		return;
-
-	queue_work(system_wq, &ctx->sq_shrink_work);
 }
 
 static void io_rings_free(struct io_ring_ctx *ctx)
 {
-	printk("nr_list:%d\n", ctx->nr_sq_arr_entries);
-	printk("remapping execution sum time:%lld\n", sum_remap_ns);
-	printk("extend execution sum time:%lld\n", sum_extend_ns);
-	printk("nr_remap_cnt:%d\n", nr_remap_cnt);
-
 	if (!(ctx->flags & IORING_SETUP_NO_MMAP)) {	
 				io_pages_unmap(ctx->rings, &ctx->ring_pages, &ctx->n_ring_pages, true);
 	} else {
@@ -3733,8 +3661,6 @@ int io_remap_sq_ring(struct io_ring_ctx *ctx, struct io_uring_sqe_node* node, u3
 	       ctx, ctx->nr_sq_arr_entries, ctx->nr_sq_online_entries,
 	       ctx->max_online_sq, READ_ONCE(ctx->nr_sq_spare_entries));
 
-	nr_remap_cnt++;
-
 	return ret;
 }
 
@@ -3781,10 +3707,6 @@ static void io_extend_sq_ring_worker(struct work_struct *__work)
 
 int io_extend_sq_ring(struct io_ring_ctx *ctx/*, u32 tail*/)
 {
-	ktime_t start, end;
-
-	start = ktime_get();
-
 	struct io_ring_extend_work *extend_work;
 
 	spin_lock(&ctx->lock);
@@ -3828,55 +3750,48 @@ int io_extend_sq_ring(struct io_ring_ctx *ctx/*, u32 tail*/)
 	// 이 함수는 즉시 0 (성공적으로 스케줄링됨)을 반환해야 합니다.	
 	// 실제 확장이 완료될 때까지 기다리지 않습니다.	
 
-	end = ktime_get();
-
-	/* printk("provisioning loop (taken time: %lld)", ktime_to_ns(ktime_sub(end, start))); */
-
 	return 0; 	
 }
 
 int io_extend_sq_ring_do_work(struct io_ring_ctx *ctx/*, u32 tail*/)
 {
-	ktime_t start, end;
 	size_t size;
 	int ret = 0;
+	unsigned int provision_nr;
 	int i;
 	void *ptr;
 	struct io_uring_sqe_node* new_node;
 	struct io_uring_sqe_node* first = NULL;
 	struct io_uring_sqe_node* last = NULL;
-	struct io_uring_sqe_node* node;
-	struct io_uring_sqe_node* next;
-	struct io_uring_sqe_node* keep_tail = NULL;
-	struct io_uring_sqe_node* free_head = NULL;
-	struct io_uring_sqe_node* free_tail = NULL;
 	int added = 0;
-	unsigned int keep = 0;
-	unsigned int spare_cap = 0;
-	unsigned int desired_spare = 0;
 	unsigned int spare_after = 0;
-	struct io_uring_sqe_list free_list = {};
 	gfp_t gfp = GFP_KERNEL_ACCOUNT | __GFP_ZERO | __GFP_NOWARN;
 
-	start = ktime_get();
-
 	size = array_size(sizeof(struct io_uring_sqe), ctx->sq_entries);
-	if (!size) return -EOVERFLOW;
+	if (!size)
+		return -EOVERFLOW;
 
-	for (i = 0; i < IO_SQ_EXTEND_BATCH; i++) {
-		new_node = kvzalloc(sizeof(struct io_uring_sqe_node), gfp);
+	spin_lock(&ctx->lock);
+	provision_nr = io_sq_spare_provision_nr(ctx->nr_sq_arr_entries,
+						ctx->nr_sq_spare_entries);
+	spin_unlock(&ctx->lock);
+	if (!provision_nr)
+		return 0;
+
+	for (i = 0; i < provision_nr; i++) {
+		new_node = kvzalloc(sizeof(*new_node), gfp);
 		if (!new_node) {
 			ret = -ENOMEM;
-			goto err;
+			break;
 		}
 
-		ptr = io_pages_map(&new_node->sqe_pages, &new_node->n_sqe_pages, size);	
-
+		ptr = io_pages_map(&new_node->sqe_pages, &new_node->n_sqe_pages,
+				   size);
 		if (IS_ERR(ptr)) {
 			ret = PTR_ERR(ptr);
 			pr_err("io_pages_map err: %d\n", ret);
 			kvfree(new_node);
-			goto err;
+			break;
 		}
 
 		new_node->sqe = ptr;
@@ -3889,72 +3804,27 @@ int io_extend_sq_ring_do_work(struct io_ring_ctx *ctx/*, u32 tail*/)
 		added++;
 	}
 
-	if (added) {
-		spin_lock(&ctx->lock);
-		spare_cap = io_sq_spare_cap(ctx->nr_sq_arr_entries);
-		desired_spare = spare_cap;
-		if (!desired_spare && !ctx->nr_sq_spare_entries)
-			desired_spare = 1;
-		if (ctx->nr_sq_spare_entries < desired_spare)
-			keep = min_t(unsigned int, added,
-				     desired_spare - ctx->nr_sq_spare_entries);
+	if (!added)
+		return ret;
 
-		if (keep) {
-			keep_tail = first;
-			for (i = 1; i < keep; i++)
-				keep_tail = keep_tail->next;
-			free_head = keep_tail->next;
-			free_tail = last;
-			keep_tail->next = NULL;
-
-			if (ctx->sq_spare_list.head) {
-				ctx->sq_spare_list.tail->next = first;
-				ctx->sq_spare_list.tail = keep_tail;
-				ctx->nr_sq_spare_entries += keep;
-			} else {
-				ctx->sq_spare_list.head = first;
-				ctx->sq_spare_list.tail = keep_tail;
-				ctx->nr_sq_spare_entries = keep;
-			}
-		} else {
-			free_head = first;
-			free_tail = last;
-		}
-		spare_after = ctx->nr_sq_spare_entries;
-		spin_unlock(&ctx->lock);
-
-		if (free_head) {
-			free_list.head = free_head;
-			free_list.tail = free_tail;
-			io_sqes_list_free(ctx, &free_list);
-		}
-
-		if (keep) {
-			printk(KERN_INFO "nazgul_sq grow_alloc ctx=%px added=%u active=%u online=%u spare=%u\n",
-			       ctx, keep, ctx->nr_sq_arr_entries,
-			       ctx->nr_sq_online_entries, spare_after);
-		}
+	spin_lock(&ctx->lock);
+	if (ctx->sq_spare_list.head) {
+		ctx->sq_spare_list.tail->next = first;
+		ctx->sq_spare_list.tail = last;
+		ctx->nr_sq_spare_entries += added;
+	} else {
+		ctx->sq_spare_list.head = first;
+		ctx->sq_spare_list.tail = last;
+		ctx->nr_sq_spare_entries = added;
 	}
-	
-	end = ktime_get();
-	s64 due = ktime_to_ns(ktime_sub(end, start));
-	sum_extend_ns += due;
+	spare_after = ctx->nr_sq_spare_entries;
+	spin_unlock(&ctx->lock);
 
-	/* printk("do extend: nr_sq_arr_entries(%d), time taken (%lld)", ctx->nr_sq_arr_entries, due); */
+	printk(KERN_INFO "nazgul_sq grow_alloc ctx=%px added=%u active=%u online=%u spare=%u\n",
+	       ctx, added, ctx->nr_sq_arr_entries,
+	       ctx->nr_sq_online_entries, spare_after);
 
 	return 0;
-
-err:
-	node = first;
-	while (node) {
-		next = node->next;
-		io_pages_unmap(node->sqe, &node->sqe_pages,
-			       &node->n_sqe_pages, true);
-		kvfree(node);
-		node = next;
-	}
-
-	return ret;
 }
 
 static __cold int io_allocate_scq_urings(struct io_ring_ctx *ctx,
@@ -4012,9 +3882,6 @@ static __cold int io_allocate_scq_urings(struct io_ring_ctx *ctx,
 	}
 
 	ctx->sq_sqes = ctx->sq_sqes_list.head->sqe = ptr;
-
-	/* printk("%d\n", current->pid); */
-	/* printk("head:sqe=%p, tail:sqe=%p", ctx->sq_sqes_list.head->sqe, ctx->sq_sqes_list.tail->sqe); */
 
 	return 0;
 }
@@ -4246,6 +4113,7 @@ static __cold int io_uring_create(unsigned entries, struct io_uring_params *p,
 	ctx->nr_sq_online_entries = 1;
 	ctx->max_online_sq = 1;
 	ctx->window_max_online_sq = 1;
+	ctx->sq_reclaim_ses = 1UL << IO_SQ_SES_FP_SHIFT;
 	ctx->max_online_decay_jiffies = jiffies;
 
 	return ret;
