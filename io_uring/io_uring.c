@@ -103,7 +103,7 @@
 #include "rw.h"
 #include "alloc_cache.h"
 
-#define IORING_MAX_ENTRIES 32768
+#define IORING_MAX_ENTRIES (1U << 25)
 #define IORING_MAX_CQ_ENTRIES (2 * IORING_MAX_ENTRIES)
 
 #define SQE_COMMON_FLAGS \
