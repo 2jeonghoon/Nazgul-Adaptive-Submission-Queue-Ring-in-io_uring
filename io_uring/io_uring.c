@@ -125,12 +125,18 @@
 #define IO_COMPL_BATCH 32
 #define IO_REQ_ALLOC_BATCH 8
 #define IO_SQ_RETURN_INTERVAL msecs_to_jiffies(10 * 60 * 1000)
+// #define IO_SQ_RETURN_INTERVAL msecs_to_jiffies(1000)
 #define IO_SQ_SES_FP_SHIFT 8
 #define IO_SQ_SES_ALPHA_SHIFT 2
 
 static inline unsigned int io_sq_spare_extend_threshold(unsigned int active)
 {
 	return active >> 2;
+}
+
+static inline unsigned int io_sq_spare_cap(unsigned int active)
+{
+	return max(active >> 1, 1U);
 }
 
 static inline unsigned int io_sq_spare_provision_nr(unsigned int active,
@@ -146,8 +152,8 @@ static inline unsigned int io_sq_spare_provision_nr(unsigned int active,
 }
 
 /*
- * Smooth the per-interval peak so short bursts still influence the next
- * reclaim target without pinning the ring to the raw window maximum.
+ * Bias the update toward the larger of the previous estimate and the latest
+ * per-interval peak so shrink decisions stay conservative after bursts.
  */
 static inline unsigned int io_sq_ses_target(unsigned long ses)
 {
@@ -160,9 +166,11 @@ static inline unsigned long io_sq_ses_update(unsigned long ses,
 					     unsigned int sample)
 {
 	unsigned long sample_fp = (unsigned long)sample << IO_SQ_SES_FP_SHIFT;
+	unsigned long high = max(ses, sample_fp);
+	unsigned long low = min(ses, sample_fp);
 	unsigned long weight = (1UL << IO_SQ_SES_ALPHA_SHIFT) - 1;
 
-	ses = (weight * ses + sample_fp) >> IO_SQ_SES_ALPHA_SHIFT;
+	ses = (weight * high + low) >> IO_SQ_SES_ALPHA_SHIFT;
 	return max(ses, 1UL << IO_SQ_SES_FP_SHIFT);
 }
 
@@ -2748,7 +2756,10 @@ static bool io_sq_move_offline_to_spare(struct io_ring_ctx *ctx,
 					unsigned int target)
 {
 	struct io_uring_sqe_node *node;
+	struct io_uring_sqe_list free_list = {};
+	unsigned int spare_cap;
 	unsigned int moved = 0;
+	bool keep_as_spare = false;
 
 	if (!ctx->sq_sqes_list.head || !ctx->sq_sqes_list.tail)
 		return false;
@@ -2767,17 +2778,27 @@ static bool io_sq_move_offline_to_spare(struct io_ring_ctx *ctx,
 	if (!moved)
 		return false;
 
+	spare_cap = io_sq_spare_cap(ctx->nr_sq_arr_entries);
 	spin_lock(&ctx->lock);
-	if (ctx->sq_spare_list.head) {
-		ctx->sq_spare_list.tail->next = node;
-		ctx->sq_spare_list.tail = node;
-		ctx->nr_sq_spare_entries++;
-	} else {
-		ctx->sq_spare_list.head = node;
-		ctx->sq_spare_list.tail = node;
-		ctx->nr_sq_spare_entries = 1;
+	if (ctx->nr_sq_spare_entries < spare_cap) {
+		if (ctx->sq_spare_list.head) {
+			ctx->sq_spare_list.tail->next = node;
+			ctx->sq_spare_list.tail = node;
+			ctx->nr_sq_spare_entries++;
+		} else {
+			ctx->sq_spare_list.head = node;
+			ctx->sq_spare_list.tail = node;
+			ctx->nr_sq_spare_entries = 1;
+		}
+		keep_as_spare = true;
 	}
 	spin_unlock(&ctx->lock);
+
+	if (!keep_as_spare) {
+		free_list.head = node;
+		free_list.tail = node;
+		io_sqes_list_free(ctx, &free_list);
+	}
 
 	return true;
 }
@@ -2808,10 +2829,52 @@ static void io_sq_shrink_worker(struct work_struct *work)
 	struct io_ring_ctx *ctx = container_of(work, struct io_ring_ctx,
 					sq_shrink_work);
 
-	if (percpu_ref_is_dying(&ctx->refs))
+	printk(KERN_INFO "nazgul_sq shrink_worker ctx=%px\n", ctx);
+
+	if (percpu_ref_is_dying(&ctx->refs)) {
+		printk(KERN_INFO "nazgul_sq shrink_worker ctx=%px refs dying\n", ctx);
 		return;
-	if (!(ctx->flags & IORING_SETUP_SQPOLL))
+	}
+	if (!(ctx->flags & IORING_SETUP_SQPOLL)) {
+		printk(KERN_INFO "nazgul_sq shrink_worker ctx=%px no sqpoll\n", ctx);
 		return;
+	}
+
+	mutex_lock(&ctx->uring_lock);
+	for (;;) {
+		struct io_uring_sqe_list free_list = {};
+		struct io_uring_sqe_node *node;
+		unsigned int spare_cap;
+
+		spin_lock(&ctx->lock);
+		spare_cap = io_sq_spare_cap(ctx->nr_sq_arr_entries);
+		if (ctx->nr_sq_spare_entries <= spare_cap) {
+			spin_unlock(&ctx->lock);
+			break;
+		}
+
+		node = ctx->sq_spare_list.head;
+		if (!node) {
+			ctx->sq_spare_list.tail = NULL;
+			ctx->nr_sq_spare_entries = 0;
+			spin_unlock(&ctx->lock);
+			break;
+		}
+
+		ctx->sq_spare_list.head = node->next;
+		if (!ctx->sq_spare_list.head)
+			ctx->sq_spare_list.tail = NULL;
+		node->next = NULL;
+		ctx->nr_sq_spare_entries--;
+		spin_unlock(&ctx->lock);
+
+		free_list.head = node;
+		free_list.tail = node;
+		io_sqes_list_free(ctx, &free_list);
+	}
+	mutex_unlock(&ctx->uring_lock);
+
+	printk(KERN_INFO "nazgul_sq shrink_worker ctx=%px executing\n", ctx);
 }
 
 void io_sq_sqpoll_return_locked(struct io_ring_ctx *ctx)
@@ -2823,6 +2886,7 @@ void io_sq_sqpoll_return_locked(struct io_ring_ctx *ctx)
 		return;
 
 	io_sq_update_max_and_maybe_return(ctx);
+	io_sq_schedule_shrink(ctx);
 }
 
 void io_sq_sqpoll_try_return(struct io_ring_ctx *ctx)
@@ -2834,7 +2898,9 @@ void io_sq_sqpoll_try_return(struct io_ring_ctx *ctx)
 	if (percpu_ref_is_dying(&ctx->refs))
 		return;
 	now = jiffies;
-	if (time_before(now, ctx->max_online_decay_jiffies + IO_SQ_RETURN_INTERVAL))
+	if (time_before(now, ctx->max_online_decay_jiffies + IO_SQ_RETURN_INTERVAL) &&
+	    READ_ONCE(ctx->nr_sq_spare_entries) <=
+		    io_sq_spare_cap(READ_ONCE(ctx->nr_sq_arr_entries)))
 		return;
 	if (!mutex_trylock(&ctx->uring_lock))
 		return;
@@ -2849,6 +2915,11 @@ void io_sq_schedule_shrink(struct io_ring_ctx *ctx)
 		return;
 	if (percpu_ref_is_dying(&ctx->refs))
 		return;
+	if (READ_ONCE(ctx->nr_sq_spare_entries) <=
+	    io_sq_spare_cap(READ_ONCE(ctx->nr_sq_arr_entries)))
+		return;
+
+	queue_work(system_wq, &ctx->sq_shrink_work);
 }
 
 static void io_rings_free(struct io_ring_ctx *ctx)
@@ -3690,7 +3761,8 @@ static void io_extend_sq_ring_worker(struct work_struct *__work)
 	if (ret) {
 			// 확장 실패 처리 로직 (필요하다면 사용자에게 알림 등)
 			pr_err("io_extend_sq_ring failed in worker: %d\n", ret);
-	} else {
+	}
+   	else {
 			printk(KERN_INFO "nazgul_sq grow_worker ctx=%px active=%u online=%u spare=%u\n",
 			       ctx, ctx->nr_sq_arr_entries,
 			       ctx->nr_sq_online_entries,
@@ -3763,8 +3835,14 @@ int io_extend_sq_ring_do_work(struct io_ring_ctx *ctx/*, u32 tail*/)
 	struct io_uring_sqe_node* new_node;
 	struct io_uring_sqe_node* first = NULL;
 	struct io_uring_sqe_node* last = NULL;
+	struct io_uring_sqe_node *keep_tail = NULL;
+	struct io_uring_sqe_node *free_head = NULL;
+	struct io_uring_sqe_node *free_tail = NULL;
 	int added = 0;
+	unsigned int keep = 0;
+	unsigned int spare_cap = 0;
 	unsigned int spare_after = 0;
+	struct io_uring_sqe_list free_list = {};
 	gfp_t gfp = GFP_KERNEL_ACCOUNT | __GFP_ZERO | __GFP_NOWARN;
 
 	size = array_size(sizeof(struct io_uring_sqe), ctx->sq_entries);
@@ -3808,21 +3886,46 @@ int io_extend_sq_ring_do_work(struct io_ring_ctx *ctx/*, u32 tail*/)
 		return ret;
 
 	spin_lock(&ctx->lock);
-	if (ctx->sq_spare_list.head) {
-		ctx->sq_spare_list.tail->next = first;
-		ctx->sq_spare_list.tail = last;
-		ctx->nr_sq_spare_entries += added;
+	spare_cap = io_sq_spare_cap(ctx->nr_sq_arr_entries);
+	if (ctx->nr_sq_spare_entries < spare_cap)
+		keep = min_t(unsigned int, added,
+			     spare_cap - ctx->nr_sq_spare_entries);
+
+	if (keep) {
+		keep_tail = first;
+		for (i = 1; i < keep; i++)
+			keep_tail = keep_tail->next;
+		free_head = keep_tail->next;
+		free_tail = last;
+		keep_tail->next = NULL;
+
+		if (ctx->sq_spare_list.head) {
+			ctx->sq_spare_list.tail->next = first;
+			ctx->sq_spare_list.tail = keep_tail;
+			ctx->nr_sq_spare_entries += keep;
+		} else {
+			ctx->sq_spare_list.head = first;
+			ctx->sq_spare_list.tail = keep_tail;
+			ctx->nr_sq_spare_entries = keep;
+		}
 	} else {
-		ctx->sq_spare_list.head = first;
-		ctx->sq_spare_list.tail = last;
-		ctx->nr_sq_spare_entries = added;
+		free_head = first;
+		free_tail = last;
 	}
 	spare_after = ctx->nr_sq_spare_entries;
 	spin_unlock(&ctx->lock);
 
-	printk(KERN_INFO "nazgul_sq grow_alloc ctx=%px added=%u active=%u online=%u spare=%u\n",
-	       ctx, added, ctx->nr_sq_arr_entries,
-	       ctx->nr_sq_online_entries, spare_after);
+	if (free_head) {
+		free_list.head = free_head;
+		free_list.tail = free_tail;
+		io_sqes_list_free(ctx, &free_list);
+	}
+
+	if (keep) {
+		printk(KERN_INFO "nazgul_sq grow_alloc ctx=%px added=%u active=%u online=%u spare=%u\n",
+		       ctx, keep, ctx->nr_sq_arr_entries,
+		       ctx->nr_sq_online_entries, spare_after);
+	}
 
 	return 0;
 }
