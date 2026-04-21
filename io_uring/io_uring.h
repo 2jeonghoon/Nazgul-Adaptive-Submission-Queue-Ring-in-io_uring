@@ -100,6 +100,8 @@ inline void nazgul_func(struct io_ring_ctx *ctx);
 int io_submit_sqes(struct io_ring_ctx *ctx, unsigned int nr);
 int io_remap_sq_ring(struct io_ring_ctx *ctx, struct io_uring_sqe_node* new_node, u32 tail);
 int io_extend_sq_ring(struct io_ring_ctx *ctx, u32 tail);
+void io_sq_sqpoll_try_reclaim_locked(struct io_ring_ctx *ctx);
+void io_sq_sqpoll_try_reclaim(struct io_ring_ctx *ctx);
 int io_do_iopoll(struct io_ring_ctx *ctx, bool force_nonspin);
 void __io_submit_flush_completions(struct io_ring_ctx *ctx);
 

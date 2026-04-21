@@ -295,7 +295,8 @@ struct io_ring_ctx {
 	unsigned short n_ring_pages;
 	struct page **ring_pages;
 	struct io_uring_sqe_list sq_sqes_list;
-	unsigned nr_sq_arr_entries; 
+	unsigned nr_sq_arr_entries;
+	unsigned long sq_last_reclaim_jiffies;
 	struct vm_area_struct *sqe_vma;
 
 };
