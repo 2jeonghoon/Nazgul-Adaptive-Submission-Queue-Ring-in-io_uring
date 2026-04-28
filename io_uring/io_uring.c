@@ -2794,6 +2794,13 @@ static bool io_sq_move_offline_to_spare(struct io_ring_ctx *ctx,
 	}
 	spin_unlock(&ctx->lock);
 
+	if (keep_as_spare) {
+		printk(KERN_INFO "nazgul_sq return ctx=%px target=%u active=%u online=%u max_online=%u spare=%u\n",
+		       ctx, target, ctx->nr_sq_arr_entries,
+		       ctx->nr_sq_online_entries, ctx->max_online_sq,
+		       READ_ONCE(ctx->nr_sq_spare_entries));
+	}
+
 	if (!keep_as_spare) {
 		free_list.head = node;
 		free_list.tail = node;
@@ -2807,36 +2814,39 @@ static bool io_sq_update_max_and_maybe_return(struct io_ring_ctx *ctx)
 {
 	unsigned int online = max(ctx->nr_sq_online_entries, 1U);
 	unsigned int sample;
+	unsigned int target;
 	unsigned long now = jiffies;
 
-	if (ctx->window_max_online_sq < online)
-		ctx->window_max_online_sq = online;
+	if (ctx->max_online_sq < online)
+		ctx->max_online_sq = online;
 
 	if (time_before(now, ctx->max_online_decay_jiffies + IO_SQ_RETURN_INTERVAL))
 		return false;
 
-	sample = max(ctx->window_max_online_sq, 1U);
+	sample = max(ctx->max_online_sq, 1U);
 	ctx->sq_reclaim_ses = io_sq_ses_update(ctx->sq_reclaim_ses, sample);
-	ctx->max_online_sq = io_sq_ses_target(ctx->sq_reclaim_ses);
-	ctx->window_max_online_sq = online;
+	target = io_sq_ses_target(ctx->sq_reclaim_ses);
+	ctx->window_max_online_sq = target;
+	ctx->max_online_sq = online;
 	ctx->max_online_decay_jiffies = now;
 
-	return io_sq_move_offline_to_spare(ctx, ctx->max_online_sq);
+	return io_sq_move_offline_to_spare(ctx, target);
 }
 
 static void io_sq_shrink_worker(struct work_struct *work)
 {
 	struct io_ring_ctx *ctx = container_of(work, struct io_ring_ctx,
 					sq_shrink_work);
+	unsigned int reclaimed = 0;
 
-	printk(KERN_INFO "nazgul_sq shrink_worker ctx=%px\n", ctx);
+	/* printk(KERN_INFO "nazgul_sq shrink_worker ctx=%px\n", ctx); */
 
 	if (percpu_ref_is_dying(&ctx->refs)) {
-		printk(KERN_INFO "nazgul_sq shrink_worker ctx=%px refs dying\n", ctx);
+		/* printk(KERN_INFO "nazgul_sq shrink_worker ctx=%px refs dying\n", ctx); */
 		return;
 	}
 	if (!(ctx->flags & IORING_SETUP_SQPOLL)) {
-		printk(KERN_INFO "nazgul_sq shrink_worker ctx=%px no sqpoll\n", ctx);
+		/* printk(KERN_INFO "nazgul_sq shrink_worker ctx=%px no sqpoll\n", ctx); */
 		return;
 	}
 
@@ -2866,6 +2876,7 @@ static void io_sq_shrink_worker(struct work_struct *work)
 			ctx->sq_spare_list.tail = NULL;
 		node->next = NULL;
 		ctx->nr_sq_spare_entries--;
+		reclaimed++;
 		spin_unlock(&ctx->lock);
 
 		free_list.head = node;
@@ -2874,7 +2885,12 @@ static void io_sq_shrink_worker(struct work_struct *work)
 	}
 	mutex_unlock(&ctx->uring_lock);
 
-	printk(KERN_INFO "nazgul_sq shrink_worker ctx=%px executing\n", ctx);
+	/* printk(KERN_INFO "nazgul_sq shrink_worker ctx=%px executing\n", ctx); */
+	if (reclaimed) {
+		printk(KERN_INFO "nazgul_sq shrink ctx=%px reclaimed=%u active=%u online=%u spare=%u\n",
+		       ctx, reclaimed, ctx->nr_sq_arr_entries,
+		       ctx->nr_sq_online_entries, READ_ONCE(ctx->nr_sq_spare_entries));
+	}
 }
 
 void io_sq_sqpoll_return_locked(struct io_ring_ctx *ctx)
@@ -3726,11 +3742,11 @@ int io_remap_sq_ring(struct io_ring_ctx *ctx, struct io_uring_sqe_node* node, u3
 	ctx->nr_sq_online_entries++;
 	if (ctx->nr_sq_online_entries > ctx->nr_sq_arr_entries)
 		ctx->nr_sq_online_entries = ctx->nr_sq_arr_entries;
-	if (ctx->nr_sq_online_entries > ctx->window_max_online_sq)
-		ctx->window_max_online_sq = ctx->nr_sq_online_entries;
-	printk(KERN_INFO "nazgul_sq grow_remap ctx=%px active=%u online=%u max_online=%u spare=%u\n",
-	       ctx, ctx->nr_sq_arr_entries, ctx->nr_sq_online_entries,
-	       ctx->max_online_sq, READ_ONCE(ctx->nr_sq_spare_entries));
+	if (ctx->nr_sq_online_entries > ctx->max_online_sq)
+		ctx->max_online_sq = ctx->nr_sq_online_entries;
+	// printk(KERN_INFO "nazgul_sq grow_remap ctx=%px active=%u online=%u max_online=%u spare=%u\n",
+	//        ctx, ctx->nr_sq_arr_entries, ctx->nr_sq_online_entries,
+	//        ctx->max_online_sq, READ_ONCE(ctx->nr_sq_spare_entries));
 
 	return ret;
 }
@@ -3759,14 +3775,13 @@ static void io_extend_sq_ring_worker(struct work_struct *__work)
 		spin_unlock(&ctx->lock);
 
 	if (ret) {
-			// 확장 실패 처리 로직 (필요하다면 사용자에게 알림 등)
-			pr_err("io_extend_sq_ring failed in worker: %d\n", ret);
-	}
-   	else {
-			printk(KERN_INFO "nazgul_sq grow_worker ctx=%px active=%u online=%u spare=%u\n",
-			       ctx, ctx->nr_sq_arr_entries,
-			       ctx->nr_sq_online_entries,
-			       READ_ONCE(ctx->nr_sq_spare_entries));
+		// 확장 실패 처리 로직 (필요하다면 사용자에게 알림 등)
+		pr_err("io_extend_sq_ring failed in worker: %d\n", ret);
+	} else {
+		// printk(KERN_INFO "nazgul_sq grow_worker ctx=%px active=%u online=%u spare=%u\n",
+		//        ctx, ctx->nr_sq_arr_entries,
+		//        ctx->nr_sq_online_entries,
+		//        READ_ONCE(ctx->nr_sq_spare_entries));
 	}
 
 		// 작업 완료 후 동적 할당된 구조체 해제
