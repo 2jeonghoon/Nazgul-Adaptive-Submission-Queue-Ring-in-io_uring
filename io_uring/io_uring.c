@@ -2755,57 +2755,50 @@ static void io_sqes_list_free(struct io_ring_ctx *ctx,
 static bool io_sq_move_offline_to_spare(struct io_ring_ctx *ctx,
 					unsigned int target)
 {
-	struct io_uring_sqe_node *node;
-	struct io_uring_sqe_list free_list = {};
-	unsigned int spare_cap;
+	struct io_uring_sqe_node *node, *first = NULL, *last = NULL;
 	unsigned int moved = 0;
-	bool keep_as_spare = false;
+	unsigned int spare_after;
 
 	if (!ctx->sq_sqes_list.head || !ctx->sq_sqes_list.tail)
 		return false;
 	if (ctx->nr_sq_arr_entries <= target)
 		return false;
 
-	node = ctx->sq_sqes_list.tail->next;
-	if (!node || node == ctx->sq_sqes_list.head)
-		return false;
+	while (ctx->nr_sq_arr_entries > target) {
+		node = ctx->sq_sqes_list.tail->next;
+		if (!node || node == ctx->sq_sqes_list.head)
+			break;
 
-	ctx->sq_sqes_list.tail->next = node->next;
-	node->next = NULL;
-	moved = 1;
-	ctx->nr_sq_arr_entries--;
+		ctx->sq_sqes_list.tail->next = node->next;
+		node->next = NULL;
+		if (first)
+			last->next = node;
+		else
+			first = node;
+		last = node;
+		moved++;
+		ctx->nr_sq_arr_entries--;
+	}
 
 	if (!moved)
 		return false;
 
-	spare_cap = io_sq_spare_cap(ctx->nr_sq_arr_entries);
 	spin_lock(&ctx->lock);
-	if (ctx->nr_sq_spare_entries < spare_cap) {
-		if (ctx->sq_spare_list.head) {
-			ctx->sq_spare_list.tail->next = node;
-			ctx->sq_spare_list.tail = node;
-			ctx->nr_sq_spare_entries++;
-		} else {
-			ctx->sq_spare_list.head = node;
-			ctx->sq_spare_list.tail = node;
-			ctx->nr_sq_spare_entries = 1;
-		}
-		keep_as_spare = true;
+	if (ctx->sq_spare_list.head) {
+		ctx->sq_spare_list.tail->next = first;
+		ctx->sq_spare_list.tail = last;
+		ctx->nr_sq_spare_entries += moved;
+	} else {
+		ctx->sq_spare_list.head = first;
+		ctx->sq_spare_list.tail = last;
+		ctx->nr_sq_spare_entries = moved;
 	}
+	spare_after = ctx->nr_sq_spare_entries;
 	spin_unlock(&ctx->lock);
 
-	if (keep_as_spare) {
-		printk(KERN_INFO "nazgul_sq return ctx=%px target=%u active=%u online=%u max_online=%u spare=%u\n",
-		       ctx, target, ctx->nr_sq_arr_entries,
-		       ctx->nr_sq_online_entries, ctx->max_online_sq,
-		       READ_ONCE(ctx->nr_sq_spare_entries));
-	}
-
-	if (!keep_as_spare) {
-		free_list.head = node;
-		free_list.tail = node;
-		io_sqes_list_free(ctx, &free_list);
-	}
+	printk(KERN_INFO "nazgul_sq return ctx=%px target=%u moved=%u active=%u online=%u max_online=%u spare=%u\n",
+	       ctx, target, moved, ctx->nr_sq_arr_entries,
+	       ctx->nr_sq_online_entries, ctx->max_online_sq, spare_after);
 
 	return true;
 }
