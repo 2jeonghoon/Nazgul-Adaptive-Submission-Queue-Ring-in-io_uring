@@ -193,26 +193,42 @@ static void io_sqes_list_free(struct io_ring_ctx *ctx,
 
 static void io_sq_reclaim_spare(struct io_ring_ctx *ctx)
 {
-	while (ctx->nr_sq_arr_entries > io_sq_online_entries(ctx)) {
-		struct io_uring_sqe_list free_list = {};
-		struct io_uring_sqe_node *node;
-		unsigned int online = io_sq_online_entries(ctx);
-		unsigned int spare = ctx->nr_sq_arr_entries - online;
+	struct io_uring_sqe_list free_list = {};
+	struct io_uring_sqe_node *node, *last, *next;
+	unsigned int online, target, to_free, freed;
 
-		if (spare <= io_sq_spare_cap(online))
+	online = io_sq_online_entries(ctx);
+	if (!online || ctx->nr_sq_arr_entries <= online)
+		return;
+
+	target = online + io_sq_spare_cap(online);
+	if (ctx->nr_sq_arr_entries <= target)
+		return;
+
+	node = ctx->sq_sqes_list.tail->next;
+	if (!node || node == ctx->sq_sqes_list.head)
+		return;
+
+	to_free = ctx->nr_sq_arr_entries - target;
+	last = node;
+	freed = 1;
+
+	while (freed < to_free) {
+		next = last->next;
+		if (!next || next == ctx->sq_sqes_list.head)
 			break;
-
-		node = ctx->sq_sqes_list.tail->next;
-		if (!node || node == ctx->sq_sqes_list.head)
-			break;
-
-		ctx->sq_sqes_list.tail->next = node->next;
-		node->next = NULL;
-		ctx->nr_sq_arr_entries--;
-		free_list.head = node;
-		free_list.tail = node;
-		io_sqes_list_free(ctx, &free_list);
+		last = next;
+		freed++;
 	}
+
+	next = last->next;
+	ctx->sq_sqes_list.tail->next = next ?: ctx->sq_sqes_list.head;
+	last->next = NULL;
+
+	ctx->nr_sq_arr_entries -= freed;
+	free_list.head = node;
+	free_list.tail = last;
+	io_sqes_list_free(ctx, &free_list);
 }
 
 static inline bool io_sq_reclaim_due(struct io_ring_ctx *ctx,
