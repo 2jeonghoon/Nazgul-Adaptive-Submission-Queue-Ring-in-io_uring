@@ -473,6 +473,7 @@ static __cold struct io_ring_ctx *io_ring_ctx_alloc(struct io_uring_params *p)
 	init_waitqueue_head(&ctx->rsrc_quiesce_wq);
 	spin_lock_init(&ctx->completion_lock);
 	spin_lock_init(&ctx->timeout_lock);
+	spin_lock_init(&ctx->sqe_mmap_lock);
 	INIT_WQ_LIST(&ctx->iopoll_list);
 	INIT_LIST_HEAD(&ctx->io_buffers_comp);
 	INIT_LIST_HEAD(&ctx->defer_list);
@@ -2887,6 +2888,8 @@ static void io_req_caches_free(struct io_ring_ctx *ctx)
 
 static __cold void io_ring_ctx_free(struct io_ring_ctx *ctx)
 {
+	struct mm_struct *sqe_mm;
+
 	io_sq_thread_finish(ctx);
 	/* __io_rsrc_put_work() may need uring_lock to progress, wait w/o it */
 	if (WARN_ON_ONCE(!list_empty(&ctx->rsrc_ref_list)))
@@ -2923,6 +2926,14 @@ static __cold void io_ring_ctx_free(struct io_ring_ctx *ctx)
 		mmdrop(ctx->mm_account);
 		ctx->mm_account = NULL;
 	}
+	spin_lock(&ctx->sqe_mmap_lock);
+	sqe_mm = ctx->sqe_mm;
+	ctx->sqe_mm = NULL;
+	ctx->sqe_addr = 0;
+	ctx->sqe_len = 0;
+	spin_unlock(&ctx->sqe_mmap_lock);
+	if (sqe_mm)
+		mmdrop(sqe_mm);
 	io_rings_free(ctx);
 
 	percpu_ref_exit(&ctx->refs);
@@ -3595,28 +3606,74 @@ bool io_is_uring_fops(struct file *file)
 	return file->f_op == &io_uring_fops;
 }
 
-int io_remap_sq_ring(struct io_ring_ctx *ctx, struct io_uring_sqe_node* node, u32 tail)
+static int io_sqes_mmap_get(struct io_ring_ctx *ctx, struct mm_struct **mm,
+			    unsigned long *addr, unsigned long *len)
+{
+	spin_lock(&ctx->sqe_mmap_lock);
+	*mm = ctx->sqe_mm;
+	if (*mm) {
+		mmgrab(*mm);
+		*addr = ctx->sqe_addr;
+		*len = ctx->sqe_len;
+	}
+	spin_unlock(&ctx->sqe_mmap_lock);
+
+	if (!*mm)
+		return -EFAULT;
+	if (!*len) {
+		mmdrop(*mm);
+		*mm = NULL;
+		return -EINVAL;
+	}
+	return 0;
+}
+
+int io_remap_sq_ring(struct io_ring_ctx *ctx, struct io_uring_sqe_node *node,
+		     u32 tail)
 {
 	ktime_t start, end;
+	struct vm_area_struct *vma;
+	struct mm_struct *mm;
+	unsigned long addr, len, range_end;
 	int ret;
-	struct vm_area_struct *vma = ctx->sqe_vma;
 
 	start = ktime_get();
 
-	ctx->sq_sqes_list.tail->sq_tail = tail;
-
-	mmap_write_lock(vma->vm_mm);
-	zap_page_range_single(vma, vma->vm_start, vma->vm_end - vma->vm_start, NULL);
-	ret = io_uring_mmap_pages(ctx, vma, node->sqe_pages, node->n_sqe_pages);	
-
-	if (ret) {
-		pr_err("io_uring_mmap_pages() failed\n");
-		mmap_write_unlock(vma->vm_mm);
+	ret = io_sqes_mmap_get(ctx, &mm, &addr, &len);
+	if (ret)
 		goto out;
+	if (len > ULONG_MAX - addr) {
+		ret = -EOVERFLOW;
+		goto out_drop_mm;
+	}
+	range_end = addr + len;
+
+	if (!mmap_read_trylock(mm)) {
+		ret = -EAGAIN;
+		goto out_drop_mm;
 	}
 
-	flush_tlb_mm_range(vma->vm_mm, vma->vm_start, vma->vm_end, PAGE_SHIFT, false);
-	mmap_write_unlock(vma->vm_mm);
+	vma = find_vma(mm, addr);
+	if (!vma || vma->vm_start != addr || vma->vm_end < range_end ||
+	    !vma->vm_file || vma->vm_file->private_data != ctx ||
+	    !(vma->vm_flags & VM_MIXEDMAP) ||
+	    ((vma->vm_pgoff << PAGE_SHIFT) & IORING_OFF_MMAP_MASK) !=
+		    IORING_OFF_SQES) {
+		ret = -EFAULT;
+		goto out_unlock;
+	}
+
+	ctx->sq_sqes_list.tail->sq_tail = tail;
+	zap_page_range_single(vma, addr, len, NULL);
+	ret = io_uring_insert_pages(vma, node->sqe_pages, node->n_sqe_pages);
+
+out_unlock:
+	mmap_read_unlock(mm);
+out_drop_mm:
+	mmdrop(mm);
+	if (ret)
+		goto out;
+
 	ctx->sq_sqes_list.tail = node;
 out:
 	

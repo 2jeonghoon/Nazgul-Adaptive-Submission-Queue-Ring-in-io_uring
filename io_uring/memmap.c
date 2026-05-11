@@ -4,6 +4,7 @@
 #include <linux/errno.h>
 #include <linux/mm.h>
 #include <linux/mman.h>
+#include <linux/sched/mm.h>
 #include <linux/slab.h>
 #include <linux/vmalloc.h>
 #include <linux/io_uring.h>
@@ -231,13 +232,19 @@ static void *io_uring_validate_mmap_request(struct file *file, loff_t pgoff,
 	return ERR_PTR(-EINVAL);
 }
 
-int io_uring_mmap_pages(struct io_ring_ctx *ctx, struct vm_area_struct *vma,
-			struct page **pages, int npages)
+int io_uring_insert_pages(struct vm_area_struct *vma, struct page **pages,
+			  int npages)
 {
 	unsigned long nr_pages = npages;
 
-	vm_flags_set(vma, VM_DONTEXPAND);
 	return vm_insert_pages(vma, vma->vm_start, pages, &nr_pages);
+}
+
+int io_uring_mmap_pages(struct io_ring_ctx *ctx, struct vm_area_struct *vma,
+			struct page **pages, int npages)
+{
+	vm_flags_set(vma, VM_DONTEXPAND);
+	return io_uring_insert_pages(vma, pages, npages);
 }
 
 void io_uring_allocate_buffer(struct io_ring_ctx *ctx, int nr)
@@ -252,6 +259,23 @@ void io_uring_allocate_buffer(struct io_ring_ctx *ctx, int nr)
 
 #ifdef CONFIG_MMU
 
+static void io_uring_record_sqes_mmap(struct io_ring_ctx *ctx,
+				      struct vm_area_struct *vma)
+{
+	struct mm_struct *old_mm;
+
+	mmgrab(vma->vm_mm);
+	spin_lock(&ctx->sqe_mmap_lock);
+	old_mm = ctx->sqe_mm;
+	ctx->sqe_mm = vma->vm_mm;
+	ctx->sqe_addr = vma->vm_start;
+	ctx->sqe_len = vma->vm_end - vma->vm_start;
+	spin_unlock(&ctx->sqe_mmap_lock);
+
+	if (old_mm)
+		mmdrop(old_mm);
+}
+
 __cold int io_uring_mmap(struct file *file, struct vm_area_struct *vma)
 {
 	struct io_ring_ctx *ctx = file->private_data;
@@ -259,6 +283,7 @@ __cold int io_uring_mmap(struct file *file, struct vm_area_struct *vma)
 	long offset = vma->vm_pgoff << PAGE_SHIFT;
 	unsigned int npages;
 	void *ptr;
+	int ret;
 
 	printk("io_uring_mmap, vma:%p\n", vma);
 
@@ -273,9 +298,13 @@ __cold int io_uring_mmap(struct file *file, struct vm_area_struct *vma)
 			     (sz + PAGE_SIZE - 1) >> PAGE_SHIFT);
 		return io_uring_mmap_pages(ctx, vma, ctx->ring_pages, npages);
 	case IORING_OFF_SQES:
-		ctx->sqe_vma = vma;
-		return io_uring_mmap_pages(ctx, vma, ctx->sq_sqes_list.head->sqe_pages,
-					   ctx->sq_sqes_list.head->n_sqe_pages);
+		vm_flags_set(vma, VM_DONTEXPAND | VM_MIXEDMAP);
+		ret = io_uring_insert_pages(vma,
+					    ctx->sq_sqes_list.head->sqe_pages,
+					    ctx->sq_sqes_list.head->n_sqe_pages);
+		if (!ret)
+			io_uring_record_sqes_mmap(ctx, vma);
+		return ret;
 	case IORING_OFF_PBUF_RING:
 		return io_pbuf_mmap(file, vma);
 	}

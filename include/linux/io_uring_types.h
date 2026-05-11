@@ -297,7 +297,10 @@ struct io_ring_ctx {
 	struct io_uring_sqe_list sq_sqes_list;
 	unsigned nr_sq_arr_entries;
 	unsigned long sq_last_reclaim_jiffies;
-	struct vm_area_struct *sqe_vma;
+	struct mm_struct *sqe_mm;
+	unsigned long sqe_addr;
+	unsigned long sqe_len;
+	spinlock_t sqe_mmap_lock;
 
 };
 
