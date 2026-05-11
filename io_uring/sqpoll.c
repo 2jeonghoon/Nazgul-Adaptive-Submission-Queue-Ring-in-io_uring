@@ -402,7 +402,6 @@ static int io_sq_thread(void *data)
 	end_ns = ktime_get();
 	delta_ns = ktime_to_ns(ktime_sub(end_ns, start_ns));
 
-	printk("%d sq_thread execution time:%lld ns", current->pid, delta_ns);
 err_out:
 	complete(&sqd->exited);
 	do_exit(0);

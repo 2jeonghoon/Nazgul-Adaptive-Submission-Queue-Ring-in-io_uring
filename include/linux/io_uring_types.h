@@ -106,22 +106,16 @@ struct io_uring {
 };
 
 struct io_uring_sqe_node {
-	struct io_uring_sqe* sqe;
+	struct io_uring_sqe *sqe;
 	u32 sq_tail;
 	struct io_uring_sqe_node *next;
-	struct page** sqe_pages;
+	struct page **sqe_pages;
 	unsigned short n_sqe_pages;
 };
 
 struct io_uring_sqe_list {
 	struct io_uring_sqe_node *head;
 	struct io_uring_sqe_node *tail;
-};
-
-struct io_ring_extend_work {
-		struct work_struct work;  // 워커 스레드 시스템의 기본 구조체
-		struct io_ring_ctx *ctx;  // io_ring_ctx 컨텍스트 포인터
-		// u32 tail;                 // io_expand_sq_ring에 전달된 tail 값
 };
 
 /*
@@ -308,10 +302,13 @@ struct io_ring_ctx {
 	unsigned window_max_online_sq;
 	unsigned long sq_reclaim_ses;
 	unsigned long max_online_decay_jiffies;
-	struct vm_area_struct *sqe_vma;
-	bool sq_extend_pending;           // 확장 작업이 비동기적으로 진행 중인지 확인하는 플래그
+	struct mm_struct *sqe_mm;
+	unsigned long sqe_addr;
+	unsigned long sqe_len;
+	bool sq_extend_pending;
+	struct work_struct sq_extend_work;
 	struct work_struct sq_shrink_work;
-	spinlock_t lock;                  // ctx 보호를 위한 락 (선택 사항이지만 안전을 위해 필요)
+	spinlock_t lock;
 };
 
 struct io_tw_state {};

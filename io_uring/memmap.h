@@ -5,6 +5,8 @@ struct page **io_pin_pages(unsigned long ubuf, unsigned long len, int *npages);
 void io_pages_free(struct page ***pages, int npages);
 int io_uring_mmap_pages(struct io_ring_ctx *ctx, struct vm_area_struct *vma,
 			struct page **pages, int npages);
+int io_uring_insert_pages(struct vm_area_struct *vma, struct page **pages,
+			  int npages);
 
 void *io_pages_map(struct page ***out_pages, unsigned short *npages,
 		   size_t size);
